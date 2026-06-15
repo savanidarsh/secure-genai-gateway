@@ -23,26 +23,26 @@ inspection, and filtering first, and nothing happens without being logged.
 ## Architecture (target)
 
 ```
-                 ┌─────────────┐
-   User  ──────► │   Cognito   │   who are you?  (login / tokens)
-                 └──────┬──────┘
-                        ▼
-                 ┌─────────────┐
-                 │ API Gateway │   the front door  (the only way in)
-                 └──────┬──────┘
-                        ▼
-                 ┌─────────────┐      ┌─────────────────────┐
-                 │   Lambda    │────► │  Bedrock Guardrails  │  filter:
-                 │  (Python)   │      │   +  Amazon Bedrock  │  PII / injection /
-                 │ the "brain" │ ◄────│      (the model)     │  toxicity
-                 └──────┬──────┘      └─────────────────────┘
-                        │
-          ┌─────────────┼─────────────┐
-          ▼             ▼             ▼
-     ┌──────────┐  ┌──────────┐  ┌──────────┐
-     │CloudWatch│  │    S3    │  │   SNS    │
-     │  (logs)  │  │  (logs)  │  │ (alerts) │
-     └──────────┘  └──────────┘  └──────────┘
+                 +-------------+
+   User  ------> |   Cognito   |   who are you?  (login / tokens)
+                 +------+------+
+                        v
+                 +-------------+
+                 | API Gateway |   the front door  (the only way in)
+                 +------+------+
+                        v
+                 +-------------+      +----------------------+
+                 |   Lambda    |----> |  Bedrock Guardrails  |  filter:
+                 |  (Python)   |      |   +  Amazon Bedrock   |  PII / injection /
+                 |  the brain  | <----|      (the model)     |  toxicity
+                 +------+------+      +----------------------+
+                        |
+          +-------------+-------------+
+          v             v             v
+     +----------+  +----------+  +----------+
+     |CloudWatch|  |    S3    |  |   SNS    |
+     |  (logs)  |  |  (logs)  |  | (alerts) |
+     +----------+  +----------+  +----------+
 ```
 
 ---
@@ -74,11 +74,14 @@ secure-genai-gateway/
 ├── plan.md                 # full plan, architecture, phases, checklist
 ├── learnings.md            # per-phase notes, memory tricks, Q&A
 └── terraform/
-    ├── main.tf             # provider config + resources
+    ├── main.tf             # provider + backend config + resources
     ├── .terraform.lock.hcl # committed: exact provider versions + checksums
-    └── .terraform/         # IGNORED: downloaded provider plugins
-    └── terraform.tfstate   # IGNORED: state (can contain secrets)
+    ├── .terraform/         # IGNORED: downloaded provider plugins
+    └── terraform.tfstate   # IGNORED local leftover (real state lives in S3)
 ```
+
+State is stored **remotely in S3** (an encrypted, versioned, locked bucket), not on
+the local disk. See "Remote state" below.
 
 ---
 
@@ -101,10 +104,24 @@ Provision infrastructure:
 
 ```bash
 cd terraform
-terraform init      # download providers, create lock file
+terraform init      # download providers, configure the S3 backend
 terraform plan      # dry run — shows what WOULD change
 terraform apply     # build for real (type 'yes' to confirm)
 ```
+
+---
+
+## Remote state
+
+Terraform's state (its memory of what it built) is stored in a **dedicated,
+hardened S3 bucket** (`secure-genai-gateway-tfstate-...`), configured via a
+`backend "s3"` block in `main.tf` with:
+
+- `encrypt = true` — state encrypted at rest
+- `use_lockfile = true` — native S3 locking so two runs can't collide
+
+This keeps the state safe, durable, and shareable — and is required for the
+Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
 
 ---
 
@@ -114,8 +131,8 @@ terraform apply     # build for real (type 'yes' to confirm)
   contain secrets in plaintext.
 - **Committed on purpose:** `.terraform.lock.hcl` — pins exact provider versions
   and checksums for reproducible, tamper-checked builds.
-- All resources are built **private and locked-down by default**; the S3 log
-  bucket has Block Public Access, encryption at rest, and versioning.
+- All resources are built **private and locked-down by default**; both S3 buckets
+  have Block Public Access, encryption at rest, and versioning.
 - Long-lived IAM access keys are a temporary, solo-learning trade-off; the plan
   is to move to short-lived credentials (OIDC) in the CI/CD phase.
 
@@ -123,9 +140,9 @@ terraform apply     # build for real (type 'yes' to confirm)
 
 ## Status
 
-**Phase 2 (Terraform / IaC) — in progress.**
-Provider configured; first resource live: a fully hardened S3 logs bucket
-(private + encrypted + versioned). Next: move Terraform state to a secure
-remote backend, then begin Phase 3 (Lambda).
+**Phase 2 (Terraform / IaC) — COMPLETE.**
+Provider configured; two fully hardened S3 buckets live (logs + state); Terraform
+state migrated to a secure remote S3 backend with locking.
+**Next: Phase 3 — AWS Lambda (the gateway's brain).**
 
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

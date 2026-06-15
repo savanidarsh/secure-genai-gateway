@@ -29,27 +29,27 @@ security desk in front:
 ## Architecture
 
 ```
-                 ┌─────────────┐
-   User  ──────► │   Cognito   │   login / tokens
-                 └──────┬──────┘
-                        ▼
-                 ┌─────────────┐
-                 │ API Gateway │   the only way in
-                 └──────┬──────┘
-                        ▼
-                 ┌─────────────┐      ┌─────────────────────┐
-                 │   Lambda    │────► │  Bedrock Guardrails  │
-                 │  (Python)   │      │   +  Amazon Bedrock  │
-                 │ inspect +   │ ◄────│                      │
-                 │ orchestrate │      └─────────────────────┘
-                 └──────┬──────┘
-                        │
-          ┌─────────────┼─────────────┐
-          ▼             ▼             ▼
-     ┌──────────┐  ┌──────────┐  ┌──────────┐
-     │CloudWatch│  │    S3    │  │   SNS    │
-     │  (logs)  │  │  (logs)  │  │ (alerts) │
-     └──────────┘  └──────────┘  └──────────┘
+                 +-------------+
+   User  ------> |   Cognito   |   login / tokens
+                 +------+------+
+                        v
+                 +-------------+
+                 | API Gateway |   the only way in
+                 +------+------+
+                        v
+                 +-------------+      +----------------------+
+                 |   Lambda    |----> |  Bedrock Guardrails  |
+                 |  (Python)   |      |   +  Amazon Bedrock   |
+                 | inspect +   | <----|                      |
+                 | orchestrate |      +----------------------+
+                 +------+------+
+                        |
+          +-------------+-------------+
+          v             v             v
+     +----------+  +----------+  +----------+
+     |CloudWatch|  |    S3    |  |   SNS    |
+     |  (logs)  |  |  (logs)  |  | (alerts) |
+     +----------+  +----------+  +----------+
 ```
 
 ---
@@ -65,15 +65,15 @@ security desk in front:
 - [x] First commit pushed to private GitHub repo
 - [x] Initialize README.md, plan.md, learnings.md
 
-### Phase 2 — Terraform / Infrastructure as Code 🔄
+### Phase 2 — Terraform / Infrastructure as Code ✅
 - [x] Install Terraform; verify `terraform -version`
 - [x] Create `terraform/main.tf` (provider config, AWS provider pinned `~> 6.0`)
 - [x] Add Terraform rules to `.gitignore` (ignore tfstate; commit lock file)
-- [x] `terraform init` (download provider, create lock file)
-- [x] `terraform plan` ("No changes" — foundation verified)
-- [x] Provision first real resource: hardened S3 logs bucket
+- [x] `terraform init` + `terraform plan`
+- [x] Provision hardened S3 logs bucket
       (bucket + Block Public Access + AES256 encryption + versioning)
-- [ ] Move Terraform state to a secure remote backend (S3 + locking)
+- [x] Provision hardened S3 state bucket (same hardening)
+- [x] Add `backend "s3"` block (encrypt + use_lockfile) and migrate state to S3
 
 ### Phase 3 — Lambda (Python): the gateway "brain"
 - [ ] Create the Lambda function + IAM role (least-privilege)
@@ -92,7 +92,7 @@ security desk in front:
 - [ ] SNS alerts on attack patterns
 
 ### Phase 7 — CI/CD + security scanning
-- [ ] GitHub Actions pipeline (plan/apply)
+- [ ] GitHub Actions pipeline (plan/apply, using the S3 remote state)
 - [ ] Checkov scanning (fail build on insecure config)
 - [ ] OIDC authentication (replace long-lived IAM keys)
 
@@ -105,8 +105,10 @@ security desk in front:
 - **Plan before apply, always.** `terraform plan` is a dry run; read it before
   building. Watch the "to destroy" count.
 - **Never commit the treasure map.** `terraform.tfstate` can hold secrets — it
-  is always git-ignored.
+  is always git-ignored, and now lives remotely in S3.
 - **Pin versions.** Providers are pinned for reproducible, reviewable builds.
+- **State is shared memory.** Remote S3 state survives the laptop and lets the
+  Phase 7 CI/CD pipeline run Terraform in the cloud.
 - **Least privilege later.** Current AdministratorAccess + long-lived keys is a
   solo-learning trade-off; tighten to least-privilege + OIDC before "production".
 - **Living docs.** README.md, plan.md, and learnings.md are updated after every
