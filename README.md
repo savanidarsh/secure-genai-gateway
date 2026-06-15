@@ -1,124 +1,131 @@
 # Secure GenAI Inference Gateway on AWS
 
-A security checkpoint that sits between users and an AI model (Amazon Bedrock).
-It authenticates users, inspects every prompt for attacks (prompt injection, PII
-leakage, toxicity), blocks or redacts dangerous content, logs every interaction,
-alerts on attacks, and deploys through a CI/CD pipeline with security scanning.
+A security checkpoint that sits **between users and an AI model (Amazon Bedrock)**.
+It authenticates callers, inspects every prompt for attacks (prompt injection, PII
+leakage, toxicity), blocks or redacts dangerous content with Bedrock Guardrails,
+logs every interaction, alerts on attacks, and ships through a CI/CD pipeline with
+automated security scanning.
 
-> **Status:** 🚧 In progress — Phase 1 (Foundations & Setup). This is a learning
-> project built from scratch, so this README evolves as the project does.
-
----
-
-## Why this exists (the problem)
-
-Letting users talk to an AI model directly is risky. People can try to trick the
-model (*prompt injection*), leak private data (*PII*), or push abusive content
-(*toxicity*). This project puts a guarded "front door" in front of the model so
-every request is checked on the way in **and** on the way out.
-
-**One-line analogy:** it's airport security for messages going to an AI.
+> Built from scratch as a structured, phase-by-phase learning project. Everything
+> is defined as code (Terraform) and version-controlled.
 
 ---
 
-## Architecture (request flow)
+## Why this exists
+
+Letting users talk directly to a powerful AI model is risky: prompts can carry
+attacks, leak secrets, or pull the model off-task. This gateway is the guarded
+front door — nothing reaches the model without passing through authentication,
+inspection, and filtering first, and nothing happens without being logged.
+
+---
+
+## Architecture (target)
 
 ```
-        USER
-         │  prompt
-         ▼
-   [ Amazon Cognito ]    authenticate — is this a known, logged-in user?
-         │
-         ▼
-   [ API Gateway ]       the public front door (HTTPS endpoint)
-         │
-         ▼
-   [ Lambda (Python) ]   the "guard": orchestrates checks + calls the model
-         │  ├──► [ Bedrock Guardrails ]  scan prompt: injection / PII / toxicity
-         │  └──► [ Amazon Bedrock ]      generate answer (only if prompt is clean)
-         ▼
-   [ Lambda (Python) ]   scan the ANSWER too (Guardrails) before returning
-         │
-         ▼
-        USER (clean response)
-
-   Cross-cutting:  CloudWatch (logs + metrics)   SNS (attack alerts)   S3 (log/artifact storage)
+                 ┌─────────────┐
+   User  ──────► │   Cognito   │   who are you?  (login / tokens)
+                 └──────┬──────┘
+                        ▼
+                 ┌─────────────┐
+                 │ API Gateway │   the front door  (the only way in)
+                 └──────┬──────┘
+                        ▼
+                 ┌─────────────┐      ┌─────────────────────┐
+                 │   Lambda    │────► │  Bedrock Guardrails  │  filter:
+                 │  (Python)   │      │   +  Amazon Bedrock  │  PII / injection /
+                 │ the "brain" │ ◄────│      (the model)     │  toxicity
+                 └──────┬──────┘      └─────────────────────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+     ┌──────────┐  ┌──────────┐  ┌──────────┐
+     │CloudWatch│  │    S3    │  │   SNS    │
+     │  (logs)  │  │  (logs)  │  │ (alerts) │
+     └──────────┘  └──────────┘  └──────────┘
 ```
 
 ---
 
 ## Tech stack
 
-| Layer            | Service / Tool        | Role in plain English                          |
-|------------------|-----------------------|------------------------------------------------|
-| Auth             | Amazon Cognito        | Checks user IDs (login)                         |
-| Entry point      | API Gateway           | The public front door                           |
-| Compute          | AWS Lambda (Python)    | The guard that runs the checks                  |
-| AI model         | Amazon Bedrock        | The AI brain that answers                       |
-| Content safety   | Bedrock Guardrails    | Blocks/redacts attacks, PII, toxicity           |
-| Logging/metrics  | Amazon CloudWatch     | Security cameras + logbook                      |
-| Alerts           | Amazon SNS            | Pager that messages the team on attacks         |
-| Storage          | Amazon S3             | Stores logs and build artifacts                 |
-| Infra as Code    | Terraform             | Blueprint that builds all of the above          |
-| CI/CD            | GitHub Actions        | Auto-builds/tests when the blueprint changes    |
-| Security scan    | Checkov               | Inspects the blueprint for misconfigurations    |
+| Area | Service / Tool |
+|---|---|
+| Authentication | Amazon Cognito |
+| API entry point | Amazon API Gateway |
+| Application logic | AWS Lambda (Python) |
+| AI model | Amazon Bedrock |
+| Content safety | Amazon Bedrock Guardrails |
+| Logging / metrics | Amazon CloudWatch |
+| Log storage | Amazon S3 |
+| Alerting | Amazon SNS |
+| Infrastructure as Code | Terraform |
+| CI/CD | GitHub Actions |
+| Security scanning | Checkov |
 
 ---
 
-## Repository structure (planned)
+## Project structure
 
 ```
 secure-genai-gateway/
-├── README.md
-├── plan.md
-├── learnings.md
-├── .gitignore
-├── terraform/          # infrastructure as code (added Phase 2)
-├── src/                # Lambda Python source (added Phase 4)
-└── .github/workflows/  # CI/CD pipelines (added Phase 7)
+├── .gitignore              # guards secrets/state from Git
+├── README.md               # this file
+├── plan.md                 # full plan, architecture, phases, checklist
+├── learnings.md            # per-phase notes, memory tricks, Q&A
+└── terraform/
+    ├── main.tf             # provider config + resources
+    ├── .terraform.lock.hcl # committed: exact provider versions + checksums
+    └── .terraform/         # IGNORED: downloaded provider plugins
+    └── terraform.tfstate   # IGNORED: state (can contain secrets)
 ```
 
 ---
 
-## Prerequisites
+## Setup / prerequisites
 
-- An AWS account (✅ available)
-- VS Code, Git (with Git Bash), AWS CLI installed (✅ done)
-- Terraform (added in Phase 2)
-- A GitHub account
+- An AWS account with **MFA** enabled on root and on an IAM user.
+- A dedicated IAM user (here: `darsh`) used for day-to-day work — **never** root.
+- **AWS CLI v2** installed and configured (`aws configure`), region `us-east-1`.
+- **Terraform** installed (verify with `terraform -version`).
+- **Git** + a GitHub account (this repo is **private**).
+- Editor: **VS Code**, terminal: **Git Bash** (Linux-style shell on Windows).
 
----
+Verify your AWS connection:
 
-## Setup (high level — see `plan.md` for the full step list)
+```bash
+aws sts get-caller-identity   # should return your IAM user ARN, not root
+```
 
-1. Install tooling (VS Code, Git, AWS CLI).
-2. Secure the AWS account (root MFA, least-privilege IAM user) and configure the CLI.
-3. Create the project folder + `.gitignore`, initialise Git, push to GitHub.
-4. Build infrastructure phase by phase with Terraform.
+Provision infrastructure:
 
----
-
-## Security notes (read before your first commit)
-
-Some files must **never** be committed to Git/GitHub:
-
-| Never commit            | Why                                                        |
-|-------------------------|------------------------------------------------------------|
-| `.env` / secrets files  | Hold API keys/passwords — leak = account takeover          |
-| AWS credentials         | Leaked keys are scraped by bots within minutes             |
-| `*.tfstate`             | Terraform state can contain secrets and resource details    |
-| `.terraform/`           | Local provider/cache files, not source                     |
-
-These are blocked via `.gitignore` (created in Phase 1, **before** the first commit).
+```bash
+cd terraform
+terraform init      # download providers, create lock file
+terraform plan      # dry run — shows what WOULD change
+terraform apply     # build for real (type 'yes' to confirm)
+```
 
 ---
 
-## Cost note
+## Security notes
 
-This uses pay-as-you-go AWS services. Most are cheap or free-tier while learning,
-but **resources are torn down in the final phase** to avoid ongoing charges.
+- **Never committed:** `terraform.tfstate`, `*.tfvars`, `.terraform/` — state can
+  contain secrets in plaintext.
+- **Committed on purpose:** `.terraform.lock.hcl` — pins exact provider versions
+  and checksums for reproducible, tamper-checked builds.
+- All resources are built **private and locked-down by default**; the S3 log
+  bucket has Block Public Access, encryption at rest, and versioning.
+- Long-lived IAM access keys are a temporary, solo-learning trade-off; the plan
+  is to move to short-lived credentials (OIDC) in the CI/CD phase.
 
 ---
 
-*This is a learning project. The goal is to understand both the technology and how
-it is actually built, not just to ship it.*
+## Status
+
+**Phase 2 (Terraform / IaC) — in progress.**
+Provider configured; first resource live: a fully hardened S3 logs bucket
+(private + encrypted + versioned). Next: move Terraform state to a secure
+remote backend, then begin Phase 3 (Lambda).
+
+See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

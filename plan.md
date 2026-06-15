@@ -1,155 +1,113 @@
-# Project Plan — Secure GenAI Inference Gateway on AWS
+# Project Plan — Secure GenAI Inference Gateway
 
-This is the master map for the whole project: the concept, the architecture, the
-phases, and the **checklist** to track progress. Updated after every completed task.
+## Concept (in one line)
 
----
-
-## 1. Concept (plain English)
-
-We're building a **security checkpoint** between users and an AI model. Think of a
-nightclub with one AI genius inside. People line up to ask the genius questions, but
-some are sneaky — they try to trick it, sneak out secrets, or shout abuse. So we put
-staff at the door:
-
-- **Cognito** = the bouncer checking IDs (authentication = proving who you are).
-- **API Gateway** = the front door / reception desk.
-- **Lambda** = the guard doing the actual inspecting.
-- **Bedrock** = the AI genius in the back.
-- **Guardrails** = the metal detector + censor (blocks/redacts bad content).
-- **CloudWatch** = the cameras + logbook.
-- **SNS** = the alarm/pager.
-- **S3** = the storage room.
-- **Terraform** = the building blueprint (Infrastructure as Code).
-- **GitHub Actions** = the construction crew (CI/CD).
-- **Checkov** = the building inspector for the blueprint.
-
-**Memory trick:** *Bouncer → Door → Guard → Genius → Detector → Cameras → Alarm.*
+Build a guarded front door that sits between users and Amazon Bedrock: it checks
+who you are, inspects what you send, blocks/redacts anything dangerous, logs
+everything, alerts on attacks, and deploys safely through CI/CD.
 
 ---
 
-## 2. Architecture (request flow)
+## The idea, in plain words
+
+A powerful AI model is like a very capable employee who will do almost anything
+you ask. You don't let strangers walk up and give that employee orders. You put a
+security desk in front:
+
+1. **Cognito** checks your ID at the door (authentication).
+2. **API Gateway** is the only door in.
+3. **Lambda (Python)** is the guard who reads your request and decides what to do.
+4. **Bedrock Guardrails** is the filter that strips out attacks, PII, and toxicity.
+5. **Bedrock** is the model that actually answers — only after the request is clean.
+6. **CloudWatch + S3** write down everything that happened (the logbook).
+7. **SNS** raises the alarm when something looks like an attack.
+8. **Terraform / GitHub Actions / Checkov** make sure the whole thing is built
+   the same way every time, reviewed before it ships, and scanned for mistakes.
+
+---
+
+## Architecture
 
 ```
- USER ─prompt─► [Cognito: logged in?] ─► [API Gateway: front door]
-                                              │
-                                              ▼
-                                    [Lambda guard]
-                                     │        │
-                          scan prompt│        │ if clean, ask model
-                                     ▼        ▼
-                            [Guardrails]   [Bedrock AI]
-                                     │        │
-                                     └──►[Lambda guard]: scan the ANSWER
-                                              │
-                                              ▼
-                                          USER (clean reply)
-
- Always-on: CloudWatch (logs/metrics) · SNS (alerts) · S3 (storage)
+                 ┌─────────────┐
+   User  ──────► │   Cognito   │   login / tokens
+                 └──────┬──────┘
+                        ▼
+                 ┌─────────────┐
+                 │ API Gateway │   the only way in
+                 └──────┬──────┘
+                        ▼
+                 ┌─────────────┐      ┌─────────────────────┐
+                 │   Lambda    │────► │  Bedrock Guardrails  │
+                 │  (Python)   │      │   +  Amazon Bedrock  │
+                 │ inspect +   │ ◄────│                      │
+                 │ orchestrate │      └─────────────────────┘
+                 └──────┬──────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+     ┌──────────┐  ┌──────────┐  ┌──────────┐
+     │CloudWatch│  │    S3    │  │   SNS    │
+     │  (logs)  │  │  (logs)  │  │ (alerts) │
+     └──────────┘  └──────────┘  └──────────┘
 ```
 
-Two scans, not one — **the prompt going in AND the answer coming out** both get
-inspected. That's the core security idea.
-
 ---
 
-## 3. Phases (goal of each)
+## Phases & checklist
 
-| # | Phase                          | Goal                                                        |
-|---|--------------------------------|-------------------------------------------------------------|
-| 1 | Foundations & Setup            | Tools, secure AWS account, Git/GitHub, the secret-leak guard |
-| 2 | Terraform basics               | Write infra as code; connect safely to AWS; remote state    |
-| 3 | Cognito                        | Add the login/bouncer                                       |
-| 4 | API Gateway + Lambda           | Build the front door + guard skeleton                       |
-| 5 | Bedrock + Guardrails           | Connect the AI brain + injection/PII/toxicity filtering     |
-| 6 | CloudWatch + SNS               | Logging, metrics, attack alerts                             |
-| 7 | GitHub Actions + Checkov       | Auto-build/deploy + security scan the blueprint             |
-| 8 | Hardening, testing, teardown   | Tighten, test end-to-end, delete resources to stop costs    |
+### Phase 1 — Foundations & Setup ✅
+- [x] Install VS Code, Git (Git Bash as default VS Code terminal), AWS CLI v2
+- [x] Enable MFA on root account
+- [x] Create IAM user `darsh` (AdministratorAccess) + MFA
+- [x] Configure AWS CLI (`us-east-1`, JSON) and verify with `aws sts get-caller-identity`
+- [x] Create project folder + Git repo; add `.gitignore` BEFORE first commit
+- [x] First commit pushed to private GitHub repo
+- [x] Initialize README.md, plan.md, learnings.md
 
----
+### Phase 2 — Terraform / Infrastructure as Code 🔄
+- [x] Install Terraform; verify `terraform -version`
+- [x] Create `terraform/main.tf` (provider config, AWS provider pinned `~> 6.0`)
+- [x] Add Terraform rules to `.gitignore` (ignore tfstate; commit lock file)
+- [x] `terraform init` (download provider, create lock file)
+- [x] `terraform plan` ("No changes" — foundation verified)
+- [x] Provision first real resource: hardened S3 logs bucket
+      (bucket + Block Public Access + AES256 encryption + versioning)
+- [ ] Move Terraform state to a secure remote backend (S3 + locking)
 
-## 4. Master checklist
+### Phase 3 — Lambda (Python): the gateway "brain"
+- [ ] Create the Lambda function + IAM role (least-privilege)
+- [ ] Write the request-handling / inspection logic
 
-### Phase 1 — Foundations & Setup
-- [x] AWS account exists and can log in
-- [x] Install VS Code, Git (Git Bash), AWS CLI
-- [x] Verify installs (`git --version` → 2.54.0, `aws --version` → aws-cli v2.34.60)
-- [x] Set Git Bash as the default VS Code terminal (confirmed: MINGW64 prompt)
-- [x] Secure AWS account: root MFA on; IAM user has MFA; now working as IAM user
-- [x] Create a least-privilege IAM user/identity for daily work (user `darsh`, AdministratorAccess — broad, OK for learning)
-- [x] Configure the AWS CLI with that identity (region us-east-1; verified via `aws sts get-caller-identity` → `user/darsh`)
-- [x] Create the project folder in VS Code (`~/projects/secure-genai-gateway`)
-- [x] Create `.gitignore` (BEFORE first commit) — blocks secrets, tfstate, junk
-- [x] `git init` + rename branch to `main`
-- [ ] First commit (after the three docs are in the repo)
-- [ ] Create GitHub repo and push
-- [ ] Create README.md, plan.md, learnings.md
-- [ ] Phase 1 quiz + summary
-
-### Phase 2 — Terraform basics
-- [ ] Install Terraform
-- [ ] Provider block + version pinning
-- [ ] Remote state backend (S3) — and why local state is risky
-- [ ] First safe resource + `plan`/`apply` workflow
-
-### Phase 3 — Cognito
-- [ ] User pool + app client
-- [ ] Token-based auth flow understood
-
-### Phase 4 — API Gateway + Lambda
-- [ ] Lambda (Python) skeleton
-- [ ] API Gateway wired to Lambda
-- [ ] Cognito authorizer on the endpoint
+### Phase 4 — Cognito + API Gateway
+- [ ] Cognito user pool (authentication)
+- [ ] API Gateway in front of Lambda, secured by Cognito
 
 ### Phase 5 — Bedrock + Guardrails
-- [ ] Enable Bedrock model access
-- [ ] Create a Guardrail (injection / PII / toxicity)
-- [ ] Scan prompt in, scan answer out
+- [ ] Connect Lambda to Amazon Bedrock
+- [ ] Configure Bedrock Guardrails (PII, prompt injection, toxicity)
 
-### Phase 6 — CloudWatch + SNS
-- [ ] Structured logging of every interaction
-- [ ] Metrics + alarm on attacks
-- [ ] SNS topic + subscription for alerts
+### Phase 6 — Observability & alerting
+- [ ] CloudWatch logging (metadata + redacted prompts — never raw secrets)
+- [ ] SNS alerts on attack patterns
 
-### Phase 7 — GitHub Actions + Checkov
-- [ ] CI pipeline (plan on PR)
-- [ ] Checkov scan gate
-- [ ] Secure deploy (OIDC, no long-lived keys)
-
-### Phase 8 — Hardening, testing, teardown
-- [ ] End-to-end attack tests
-- [ ] Least-privilege review
-- [ ] `terraform destroy` to stop costs
+### Phase 7 — CI/CD + security scanning
+- [ ] GitHub Actions pipeline (plan/apply)
+- [ ] Checkov scanning (fail build on insecure config)
+- [ ] OIDC authentication (replace long-lived IAM keys)
 
 ---
 
-## 5. Security principles (non-negotiable)
+## Important notes & principles
 
-1. **Never use the AWS root account for daily work.** Lock it with MFA, then leave it alone.
-2. **Least privilege.** Every identity gets only the permissions it truly needs.
-3. **No secrets in Git, ever.** `.gitignore` is created *before* the first commit.
-4. **Inspect both directions.** Prompt in AND answer out are scanned.
-5. **Log everything, alert on attacks.** You can't defend what you can't see.
-6. **Scan infra before deploy.** Checkov checks the blueprint, not just the running system.
-
----
-
-## 6. Cost & teardown notes
-
-- Most services are cheap/free-tier during learning; Bedrock model calls cost per use.
-- Avoid leaving anything running idle.
-- Final phase runs `terraform destroy` to remove everything and stop charges.
-
----
-
-## 7. Key design decisions (summary)
-
-| Decision                         | Why                                                          |
-|----------------------------------|--------------------------------------------------------------|
-| Terraform for infra              | Repeatable, reviewable, version-controlled cloud setup       |
-| Two-direction scanning           | Attacks/leaks can appear in the model's output too           |
-| Cognito over rolling our own auth| Auth is hard to get right; use a battle-tested service       |
-| Remote state (S3) over local     | Local state can be lost or accidentally committed            |
-| Checkov in CI                    | Catch misconfigurations before they ever deploy              |
-
-*(Full reasoning + rejected alternatives live in `learnings.md`.)*
+- **Security first, by default.** Every resource is built private/locked-down;
+  safety is written explicitly in code, not left to defaults.
+- **Plan before apply, always.** `terraform plan` is a dry run; read it before
+  building. Watch the "to destroy" count.
+- **Never commit the treasure map.** `terraform.tfstate` can hold secrets — it
+  is always git-ignored.
+- **Pin versions.** Providers are pinned for reproducible, reviewable builds.
+- **Least privilege later.** Current AdministratorAccess + long-lived keys is a
+  solo-learning trade-off; tighten to least-privilege + OIDC before "production".
+- **Living docs.** README.md, plan.md, and learnings.md are updated after every
+  completed task.
