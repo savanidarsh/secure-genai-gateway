@@ -283,4 +283,233 @@ secure-genai-gateway/
 
 ---
 
-*(Next: Phase 3 — AWS Lambda, the gateway's brain.)*
+## Phase 3 — Lambda (Python): the gateway's brain
+
+### What I did
+Built and deployed the first working piece of the gateway: an AWS Lambda function
+(`secure-genai-gateway-handler`) running a Python skeleton handler, plus its
+least-privilege IAM execution role, an explicit CloudWatch log group, and the
+Terraform that zips and ships the code. Then test-invoked it (got `200`) and
+confirmed the logs landed in CloudWatch.
+
+### Why
+Lambda is the "guard at the desk" — the code that reads each request and decides
+what to do. We build the guard first as a skeleton (just acknowledges the request)
+so the plumbing works before adding the real brains (prompt inspection + Bedrock)
+in later phases. Everything is locked down from day one: the guard's badge can do
+exactly one thing — write logs — and nothing else.
+
+### How
+- **`terraform/lambda.tf`** holds 5 blocks:
+  1. `aws_iam_role.lambda_exec` — the role (badge) + trust policy (only the Lambda
+     service may assume it).
+  2. `aws_cloudwatch_log_group.lambda` — explicit logbook, 14-day retention.
+  3. `aws_iam_role_policy.lambda_logging` — permissions policy: only
+     `logs:CreateLogStream` + `logs:PutLogEvents`, scoped to our log group's ARN.
+  4. `data.archive_file.lambda_zip` — zips `../src` into `lambda.zip`.
+  5. `aws_lambda_function.gateway` — the function; `runtime = python3.13`,
+     `handler = handler.lambda_handler`, `source_code_hash` so code edits redeploy.
+- **`src/handler.py`** — reads `event["prompt"]`, logs its *length* (not content),
+  returns `{statusCode: 200, body: ...}`.
+- Declared `hashicorp/archive` in `required_providers`; ran `terraform init`.
+- Deployed with `terraform apply` (4 added), then:
+  `aws lambda invoke --function-name secure-genai-gateway-handler
+   --payload '{"prompt":"hello gateway"}' --cli-binary-format raw-in-base64-out
+   response.json` → `200`, `prompt_length: 13`.
+
+### The Code, Explained (plain words under each block)
+
+**`main.tf` — added to `required_providers`:**
+```hcl
+archive = {
+  source  = "hashicorp/archive"
+  version = "~> 2.0"
+}
+```
+> Adds the "zipping tool" to my project's shopping list, so Terraform can package
+> my Python code into a `.zip`. `~> 2.0` = "any 2.x version, not 3.x."
+
+---
+
+**`lambda.tf` — Block A: the role + trust policy**
+```hcl
+resource "aws_iam_role" "lambda_exec" {
+  name = "secure-genai-gateway-lambda-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+```
+> Makes an empty "visitor badge" (a role) and writes the rule for **who** may wear
+> it: only the Lambda service — nobody and nothing else. `jsonencode` just converts
+> my tidy text into the JSON format AWS wants.
+
+---
+
+**`lambda.tf` — Block B: the log group (logbook)**
+```hcl
+resource "aws_cloudwatch_log_group" "lambda" {
+  name              = "/aws/lambda/secure-genai-gateway-handler"
+  retention_in_days = 14
+}
+```
+> Creates the notebook the Lambda will write logs into, and says "auto-delete pages
+> older than 14 days" (so logs don't pile up forever). The name must match
+> `/aws/lambda/<function-name>` exactly so Lambda writes to *this* notebook.
+
+---
+
+**`lambda.tf` — Block C: the permissions policy**
+```hcl
+resource "aws_iam_role_policy" "lambda_logging" {
+  name   = "lambda-logging"
+  role   = aws_iam_role.lambda_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = "${aws_cloudwatch_log_group.lambda.arn}:*"
+    }]
+  })
+}
+```
+> Writes what the badge is allowed to **do**, and sticks it on the role: only two
+> things — open a new log page and write lines on it — and only inside my own log
+> group (`:*` = any page of *this* notebook, not all notebooks). Everything else is
+> denied by default.
+
+---
+
+**`lambda.tf` — Block D: zip the code**
+```hcl
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../src"
+  output_path = "${path.module}/lambda.zip"
+}
+```
+> A helper that zips up my `src` folder into `lambda.zip`. `path.module` = "the
+> folder this file is in" (`terraform/`); `../src` = "go up one level, then into
+> src." `data` = it *prepares* something, it doesn't create cloud stuff.
+
+---
+
+**`lambda.tf` — Block E: the Lambda function**
+```hcl
+resource "aws_lambda_function" "gateway" {
+  function_name    = "secure-genai-gateway-handler"
+  role             = aws_iam_role.lambda_exec.arn
+  handler          = "handler.lambda_handler"
+  runtime          = "python3.13"
+  timeout          = 10
+  filename         = data.archive_file.lambda_zip.output_path
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  depends_on = [
+    aws_iam_role_policy.lambda_logging,
+    aws_cloudwatch_log_group.lambda,
+  ]
+}
+```
+> Creates the actual guard (Lambda). It wears the badge (`role`), runs `python3.13`,
+> and starts at `handler.py`'s `lambda_handler` function. `timeout = 10` = give up
+> after 10s. `filename` = the zip to upload. `source_code_hash` = a fingerprint so
+> Terraform redeploys whenever my code changes. `depends_on` = build the log group
+> and policy *first*.
+
+---
+
+**`src/handler.py` — the brain**
+```python
+def lambda_handler(event, context):
+    logger.info("Gateway invoked.")
+    prompt = event.get("prompt", "")
+    logger.info("Received a prompt of length %d.", len(prompt))
+    body = {"status": "ok", "message": "Gateway received your request.",
+            "prompt_length": len(prompt)}
+    return {"statusCode": 200, "body": json.dumps(body)}
+```
+> The code that runs each time the Lambda wakes. It reads the incoming request
+> (`event`), safely pulls out the `prompt` (or "" if missing), logs only its
+> **length** (never the actual text — that could be sensitive), and sends back a
+> "200 OK" reply. `json.dumps` turns the reply dictionary into text.
+
+---
+
+### The permission chain (how the 3 IAM pieces connect)
+```
+Lambda  --wears-->  Role  --carries-->  Policy  --points at-->  Log group
+(guard)            (badge)             (rule)                  (logbook)
+```
+They're three separate AWS objects on purpose: role & policy live in IAM, the log
+group lives in CloudWatch; one role can carry many policies; "who may wear it"
+(trust) and "what it unlocks" (permissions) are deliberately kept apart.
+
+### Alternatives considered
+- **Managed policy `AWSLambdaBasicExecutionRole`** instead of a custom inline
+  policy — easier, but it grants logging on `Resource: "*"` (every log group).
+  Rejected: we scope to our own log group's ARN for least privilege.
+- **Let Lambda auto-create its log group** — simplest, but the auto-created group
+  keeps logs *forever* (cost + privacy risk). Rejected: we create it explicitly
+  with 14-day retention.
+- **Inline JSON files vs `jsonencode({...})`** for policies — `jsonencode` keeps it
+  in one readable Terraform file; chosen for clarity.
+
+### Memory Tricks (Phase 3)
+- "Lambda = motion-sensor porch light: off until poked, bills by the millisecond."
+- "Role = visitor badge. Trust policy = WHO wears it. Permissions policy = WHAT it
+  unlocks." Chain: *Lambda wears role, role carries policy, policy points at logs.*
+- "Log the shape, not the secret." (log prompt length, never raw prompt)
+- "`init` = go shopping for the tools your code asks for."
+- "A leading `/` in Git Bash gets kidnapped into a Windows path —
+  `MSYS_NO_PATHCONV=1` calls off the kidnappers."
+
+### Doubts I Asked (Q&A)
+- *Why three separate blocks — can't we just interlink them into one?* They're
+  three real AWS objects (IAM role, IAM policy, CloudWatch log group), each with its
+  own address and lifecycle. One Terraform block = one AWS object; AWS has no
+  "combined" object. Keeping them separate lets one role carry several policies and
+  keeps trust (who) separate from permissions (what). They *are* linked — via `.id`
+  / `.arn` references, which also tell Terraform the build order.
+- *Is it "Lambda → log group"?* No — it's the **policy** that links to the log
+  group, not the Lambda. Chain: Lambda → role → policy → log group. And the Lambda
+  didn't exist yet when we wrote the badge; it shows up last and wears it.
+- *Where do I add the `archive` provider?* Inside the **one** existing
+  `required_providers { }` block at the top of `main.tf` (not a second block —
+  duplicates error out).
+- *`aws logs tail` failed with an InvalidParameterException regex error — why?*
+  Git Bash auto-converted the `/aws/lambda/...` argument into a Windows path
+  (adding a `:`), which broke the log-group name. Fix: prefix the command with
+  `MSYS_NO_PATHCONV=1`.
+- *What does the `:*` mean in `"${...lambda.arn}:*"`?* It's a **scoped** wildcard:
+  "this log group **and any log stream (page) inside it**" — NOT "all log groups."
+  Lambda creates a fresh log stream per run, and `PutLogEvents` writes to a stream,
+  so the `:*` is needed. Bare `Resource = "*"` (all groups) is the over-broad
+  version we avoid. *Any page of THIS notebook, not any notebook.*
+- *How are `main.tf` and `lambda.tf` connected?* By **living in the same folder** —
+  Terraform reads every `.tf` file in a folder and merges them into one config
+  before running. No import/include needed. `main.tf` provides the providers,
+  region, and state backend; `lambda.tf`'s resources silently inherit all of that.
+- *Can I move blocks between the two files, or put everything in one?* Yes — it's
+  all merged anyway, so layout is for humans, not the machine. BUT the one-of-a-kind
+  blocks (`terraform`, `required_providers`, `provider "aws"`, and any
+  type+nickname pair) must still be **unique** — "split across files" never means
+  "have two." Splitting by topic (lambda.tf, s3.tf, ...) is the readable convention.
+- *What is the "zipping tool" and how does it relate to Terraform?* Lambda only
+  accepts code as a `.zip` (the "envelope"). Terraform's core can't zip, so the
+  **archive provider** (a plugin) adds that skill; the `archive_file` block packs
+  `src/` into `lambda.zip` automatically on every apply. aws provider = talks to the
+  cloud; archive provider = packs the box.
+- *Do we always use zipping in Terraform / IaC?* No — only when **deploying our own
+  code** (Lambda etc.). Buckets, roles, networks need no zip. And the tool **packs**
+  (zips) on my laptop; **AWS unpacks** (unzips) it in the cloud to run it. I pack
+  the envelope, AWS opens it.
+
+---
+
+*(Next: Phase 4 — Cognito + API Gateway: the ID check and the only door in.)*

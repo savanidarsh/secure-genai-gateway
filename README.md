@@ -140,9 +140,12 @@ Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
 
 ## Status
 
-**Phase 2 (Terraform / IaC) — COMPLETE.**
-Provider configured; two fully hardened S3 buckets live (logs + state); Terraform
-state migrated to a secure remote S3 backend with locking.
-**Next: Phase 3 — AWS Lambda (the gateway's brain).**
+**Phase 3 (Lambda — the gateway's brain) — COMPLETE.**
+Lambda `secure-genai-gateway-handler` (Python 3.13) is live, deployed via Terraform
+(`lambda.tf` + `src/handler.py`). It runs under a least-privilege IAM role whose
+only permission is writing to its own CloudWatch log group (14-day retention). The
+skeleton handler acknowledges requests and logs prompt *length*, never content.
+Test-invoke returns `200`; logs confirmed in CloudWatch.
+**Next: Phase 4 — Cognito + API Gateway (the ID check and the only door in).**
 
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

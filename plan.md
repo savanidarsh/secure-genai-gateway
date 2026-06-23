@@ -75,9 +75,14 @@ security desk in front:
 - [x] Provision hardened S3 state bucket (same hardening)
 - [x] Add `backend "s3"` block (encrypt + use_lockfile) and migrate state to S3
 
-### Phase 3 — Lambda (Python): the gateway "brain"
-- [ ] Create the Lambda function + IAM role (least-privilege)
-- [ ] Write the request-handling / inspection logic
+### Phase 3 — Lambda (Python): the gateway "brain" ✅
+- [x] Create `terraform/lambda.tf`
+- [x] IAM execution role + trust policy (only `lambda.amazonaws.com` may assume)
+- [x] CloudWatch log group (explicit, 14-day retention)
+- [x] Least-privilege logging policy (only `CreateLogStream`/`PutLogEvents`, scoped to our log group)
+- [x] Write the Python handler (`src/handler.py`) — skeleton "brain" (logs length, not content)
+- [x] Declare `hashicorp/archive` provider; `archive_file` to zip code + `aws_lambda_function` resource
+- [x] `terraform apply` (4 added); test-invoke returned 200; confirmed logs in CloudWatch
 
 ### Phase 4 — Cognito + API Gateway
 - [ ] Cognito user pool (authentication)
