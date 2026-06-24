@@ -728,6 +728,32 @@ model in **every** destination region (us-east-1, us-east-2, us-west-2) — or y
 elsewhere. ARN shapes also differ: the **profile** ARN has your account number (it's
 yours); the **foundation-model** ARNs use `::` with no account number (they're AWS's).
 
+**The vending-machine analogy (explain-like-I'm-14):**
+The Lambda is a kid buying one specific snack (the model). The snack is sold from a
+chain of vending machines in 3 cities. An app (the **inference profile**) randomly
+picks *which* city's machine serves you, based on which is least busy — you don't
+choose. Catch: **each city's machine needs its own key card** (per-region permission).
+Give the kid only a City-1 card and it works when the app picks City 1, but throws
+`AccessDenied` when it picks City 2 or 3 — random, maddening, even though the code is
+perfect. Fix: hand over a key card for **all three cities** up front. That's exactly
+what the `Resource` list does. *"The profile picks the city at random, so hand a key to
+every city it might pick."*
+
+**Where + what we changed:** all in `terraform/bedrock.tf`, block
+`aws_iam_role_policy "lambda_bedrock"`. The `Resource` list = the key cards:
+```hcl
+Resource = [
+  # The app that picks the city (the inference profile) — YOURS (has account #)
+  "arn:aws:bedrock:us-east-1:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  # The snack machine, one card per city — AWS's (empty :: , no account #)
+  "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",  # City 1
+  "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",  # City 2
+  "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"   # City 3
+]
+```
+The line everyone forgets is the **per-city model cards** (the last three) — people
+write only the profile + one region and then chase phantom `AccessDenied` errors.
+
 ### The test that proves it (`POST /chat` with a Cognito token)
 ```
 "what is a firewall?"                          -> {"status":"ok","answer":...}   (allowed)
@@ -787,6 +813,14 @@ yours); the **foundation-model** ARNs use `::` with no account number (they're A
   to any allowed US region, and model permission is granted per region. Permit only one
   region and you get random `AccessDenied` whenever AWS routes elsewhere. Fix: permit
   the model in every destination region.
+- *Explain the cross-region gotcha simply, and where/what did we change in IAM?*
+  Vending-machine analogy: the model is one snack sold in 3 cities; the inference
+  profile randomly picks the city; each city's machine needs its own key card
+  (per-region permission). One card = random `AccessDenied`; all three cards = always
+  works. **Where/what:** in `terraform/bedrock.tf`, the `aws_iam_role_policy
+  "lambda_bedrock"` block — its `Resource` list holds the profile ARN (yours, has the
+  account #) plus the **foundation-model ARN for each of us-east-1/-2 and us-west-2**
+  (AWS's, empty `::`). The three per-city model lines are the part people forget.
 - *What is the "provider produced inconsistent final plan" bug?* Three layers:
   **Terraform** (the engine/project manager), the **AWS provider** (the plugin/
   translator that calls AWS), and **AWS** itself. The error named the *provider*: it
