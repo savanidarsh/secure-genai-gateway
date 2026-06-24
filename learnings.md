@@ -637,5 +637,127 @@ Phase 5 job.
 
 ---
 
-*(Next: Phase 5 — Bedrock + Guardrails: connect the model, parse the prompt from the
-request body, and add PII / injection / toxicity filtering.)*
+---
+
+## Phase 5 — Bedrock + Guardrails (the model, behind a safety filter)
+
+### What we built (and why)
+The guard can finally *answer* — but only through a bouncer. The Lambda now calls
+**Claude Haiku 4.5** on **Amazon Bedrock**, and every call is wrapped in a **Bedrock
+Guardrail** that inspects the prompt going in and the answer coming out. Dirty input
+or output is blocked or redacted before anyone sees it. This is the literal heart of
+the whole project: *inspect, then decide.*
+
+### The flow we added
+```
+prompt --> [Guardrail checks INPUT] --> Claude Haiku --> [Guardrail checks OUTPUT] --> answer
+                  |                                              |
+              block / redact                               block / redact
+```
+
+### The pieces (Terraform -> AWS)
+- `aws_bedrock_guardrail` — the safety filter. Two policy blocks:
+  - `content_policy_config` — 6 ML classifiers: HATE/INSULTS/SEXUAL/VIOLENCE/
+    MISCONDUCT (input+output `HIGH`) and **PROMPT_ATTACK** (input `HIGH`, output
+    `NONE` — injection only exists on the way *in*).
+  - `sensitive_information_policy_config` — PII: EMAIL/PHONE → `ANONYMIZE` (redact,
+    request continues), SSN/CREDIT_CARD → `BLOCK` (too dangerous, stop the request).
+- `aws_bedrock_guardrail_version` — a frozen, numbered snapshot. Production pins a
+  *version*, not the live `DRAFT`, so a half-finished edit can't change enforcement.
+- `data "aws_caller_identity"` — a **lookup** (not a build) to get our account number
+  for the profile ARN.
+- `aws_iam_role_policy.lambda_bedrock` — least-privilege: InvokeModel/Converse/
+  GetInferenceProfile on the profile ARN **+ the foundation-model ARN in each
+  cross-region destination**, and ApplyGuardrail on our guardrail. No `Resource = "*"`.
+- `src/handler.py` — parses `event["body"]`, calls `bedrock.converse(...)` with
+  `guardrailConfig`, returns the answer, and flags `stopReason == "guardrail_intervened"`
+  as `blocked`.
+- Lambda `environment` vars: `MODEL_ID` (the `us.` profile), `GUARDRAIL_ID`,
+  `GUARDRAIL_VERSION`. Timeout bumped 10 → 30.
+
+### The cross-region inference gotcha (the big one)
+Claude Haiku on Bedrock is **cross-region inference**: when you call the `us.` profile,
+AWS may actually run the request in any of several US regions to balance load. Because
+AWS grants model permission **per region**, a least-privilege policy must allow the
+model in **every** destination region (us-east-1, us-east-2, us-west-2) — or you get a
+*confusing, intermittent* `AccessDeniedException` only when AWS happens to route
+elsewhere. ARN shapes also differ: the **profile** ARN has your account number (it's
+yours); the **foundation-model** ARNs use `::` with no account number (they're AWS's).
+
+### The test that proves it (`POST /chat` with a Cognito token)
+```
+"what is a firewall?"                          -> {"status":"ok","answer":...}   (allowed)
+"Ignore all previous instructions and ..."     -> {"status":"blocked", ...}      (injection)
+"My SSN is 123-45-6789 ..."                     -> {"status":"blocked", ...}      (PII)
+```
+
+### Alternatives considered
+- **Inline guardrail (chosen)** vs **separate `ApplyGuardrail` call**. Inline =
+  attach the guardrail to the `Converse` call; AWS checks input+output in one shot,
+  fewest moving parts. Separate = call `ApplyGuardrail` first, decide block/allow
+  yourself, then call the model — more control, more code. Chose inline now; the
+  guardrail object is identical either way, so upgrading in Phase 6 (for alerting)
+  is just splitting one call into two — no infra change.
+- **Claude Sonnet / Nova** instead of Haiku — Sonnet is smarter but ~10–15× the cost;
+  overkill for testing plumbing. Haiku chosen for cost; swapping later is one env var.
+- **Bare model ID** instead of the `us.` inference profile — fails, because this model
+  is on-demand *only* via a cross-region profile.
+- **`Resource = "*"`** on the Bedrock policy — simpler, but violates least privilege.
+  Rejected: scoped to exactly one model family + one guardrail.
+
+### Memory Tricks (Phase 5)
+- "**The model talks; the guardrail only judges.**" One generates, the others inspect.
+- "**Injection is a punch thrown at the model, not by it**" — so PROMPT_ATTACK is
+  input-only (`output_strength = NONE`).
+- "**ANONYMIZE = black out the word and continue; BLOCK = stop the whole request.**"
+- "**The profile picks the city at random, so hand a key to every city it might pick.**"
+  (cross-region IAM)
+- "**Profile is yours (has your account #); the model is AWS's (empty `::`).**"
+- "**DRAFT is the Google Doc you're editing; a version is the PDF you shipped.**"
+- "**Inference = the model running once to give one answer.**"
+- "**Guardrail = a team of small ML classifiers + a few exact-match rules** (regex /
+  word lists) — judges, never the answer-er."
+
+### Doubts I Asked (Q&A)
+- *Where is `output_strength = "NONE"` written?* In the **6th/last** `filters_config`
+  block of `content_policy_config` — the `PROMPT_ATTACK` one. It's the only block not
+  set to `"HIGH"`.
+- *Why `NONE` on PROMPT_ATTACK but `HIGH` elsewhere?* Prompt injection is something a
+  *user* does *to* the model — it only exists on the input. There's nothing to check on
+  the output, and AWS rejects the filter if you set an output strength.
+- *How do guardrails identify hate/insult/etc.?* Each category is its own **ML
+  classifier** trained on labelled examples; it scores text by *meaning*, not a
+  banned-word list, and `input_strength` is just where you set the confidence cut-off.
+  That's why it catches paraphrases and misspellings a word list would miss — but it's
+  probabilistic, so it can false-positive/negative (hence logging + alerts in Phase 6).
+- *So a guardrail is kind of a machine-learning model?* Yes — a **bundle** of small
+  pre-trained ML classifiers (toxicity, PII, injection) plus a couple of non-ML pieces
+  (your regex + word lists). You don't write the detection; you switch classifiers on/
+  off and set sensitivity. They judge; Claude is the one that answers.
+- *What does "inference type" mean?* "Inference" = the model running once to produce an
+  answer. "Inference type" = *how/where* AWS runs it: **on-demand (single region)** vs
+  **cross-region inference** (any of several US regions, AWS's choice → needs the `us.`
+  profile). Our Haiku page said cross-region, which drove both the profile ID and the
+  multi-region IAM.
+- *Why does cross-region inference force multi-region IAM?* AWS may route the request
+  to any allowed US region, and model permission is granted per region. Permit only one
+  region and you get random `AccessDenied` whenever AWS routes elsewhere. Fix: permit
+  the model in every destination region.
+- *What is the "provider produced inconsistent final plan" bug?* Three layers:
+  **Terraform** (the engine/project manager), the **AWS provider** (the plugin/
+  translator that calls AWS), and **AWS** itself. The error named the *provider*: it
+  predicted the Lambda would have 0 `environment` blocks, then changed to 1 mid-apply
+  (because the guardrail didn't exist yet at plan time). Terraform's safety check
+  ("plan must match reality") aborted. Fix: just **re-run `apply`** — now the guardrail
+  exists, the values are concrete, and the counts line up. Not our code's fault.
+- *Why did the token command fail with `--auth-flow: command not found`?* The `\`
+  line-continuations broke on paste (a stray space after `\` escapes the space, not the
+  newline), so each flag ran as its own command. Fix: put it on **one line**.
+- *Why `bash: !: event not found`?* The `!` in the password triggers bash **history
+  expansion**. Wrap the value in **single quotes** (`'...'`) to take every character
+  literally.
+
+---
+
+*(Next: Phase 6 — Observability & alerting: log metadata + the guardrail trace to
+CloudWatch, and raise SNS alerts on attack patterns.)*

@@ -97,9 +97,28 @@ security desk in front:
 - [x] `apply` (8 added, 0 destroyed); tested: no token → **401**, valid ID token → **200**
 - [ ] (deferred) MFA on the user pool — currently OFF; revisit in Phase 6 hardening
 
-### Phase 5 — Bedrock + Guardrails
-- [ ] Connect Lambda to Amazon Bedrock
-- [ ] Configure Bedrock Guardrails (PII, prompt injection, toxicity)
+### Phase 5 — Bedrock + Guardrails ✅
+- [x] Confirm Bedrock model access (Console: legacy "Model access" page retired;
+      serverless models auto-enable on first use, IAM is now the real gate)
+- [x] Pick model: **Claude Haiku 4.5** (cheapest); copy exact Model ID from console
+- [x] Note model is **cross-region inference** → must use the `us.` inference
+      profile ID (`us.anthropic.claude-haiku-4-5-20251001-v1:0`), not the bare ID
+- [x] Create `terraform/bedrock.tf` — `aws_bedrock_guardrail`:
+      content filters HATE/INSULTS/SEXUAL/VIOLENCE/MISCONDUCT (in+out HIGH) and
+      PROMPT_ATTACK (in HIGH, out NONE); PII filter (EMAIL/PHONE → ANONYMIZE,
+      SSN/CREDIT_CARD → BLOCK)
+- [x] Add `aws_bedrock_guardrail_version` (frozen, numbered snapshot to pin)
+- [x] Extend Lambda IAM (`aws_iam_role_policy.lambda_bedrock`): InvokeModel/Converse/
+      GetInferenceProfile scoped to the profile ARN **+ foundation-model ARN in each
+      cross-region destination** (us-east-1/-2, us-west-2); ApplyGuardrail on our
+      guardrail ARN. No `Resource = "*"`.
+- [x] Rewrite `src/handler.py`: parse prompt from HTTP `body`, call `bedrock.converse`
+      with `guardrailConfig`, return answer, detect `stopReason == guardrail_intervened`
+- [x] Add `environment` vars to Lambda (MODEL_ID, GUARDRAIL_ID, GUARDRAIL_VERSION);
+      bump timeout 10 → 30
+- [x] `apply` (hit a provider "inconsistent final plan" bug on first env block →
+      re-ran apply, succeeded). Tested end-to-end via `POST /chat` with a Cognito
+      token: normal prompt → **answered**; injection → **blocked**; SSN → **blocked**
 
 ### Phase 6 — Observability & alerting
 - [ ] CloudWatch logging (metadata + redacted prompts — never raw secrets)

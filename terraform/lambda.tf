@@ -50,7 +50,15 @@ resource "aws_lambda_function" "gateway" {
   role          = aws_iam_role.lambda_exec.arn
   handler       = "handler.lambda_handler"
   runtime       = "python3.13"
-  timeout       = 10
+  timeout       = 30
+
+  environment {
+    variables = {
+      MODEL_ID          = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      GUARDRAIL_ID      = aws_bedrock_guardrail.gateway.guardrail_id
+      GUARDRAIL_VERSION = aws_bedrock_guardrail_version.gateway.version
+    }
+  }
 
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256

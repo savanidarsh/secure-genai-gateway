@@ -80,6 +80,7 @@ secure-genai-gateway/
     ├── lambda.tf          # Lambda function + IAM role + log group
     ├── cognito.tf         # Cognito user pool + app client (authentication)
     ├── apigateway.tf      # HTTP API + integration + JWT authorizer + route + stage
+    ├── bedrock.tf         # Guardrail (PII/injection/toxicity) + version + Lambda Bedrock IAM
     ├── outputs.tf         # api_base_url, user_pool_id, app_client_id
     ├── .terraform.lock.hcl # committed: exact provider versions + checksums
     ├── .terraform/         # IGNORED: downloaded provider plugins
@@ -146,18 +147,23 @@ Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
 
 ## Status
 
-**Phase 4 (Cognito + API Gateway — the ID check and the only door in) — COMPLETE.**
-Users authenticate against an **Amazon Cognito** user pool (`cognito.tf`) and receive
-JWT tokens via a public app client. An **HTTP API** (API Gateway v2, `apigateway.tf`)
-is the single entry point, wired to the Lambda through a proxy integration. The
-`POST /chat` route is protected by a **JWT authorizer** that validates each token's
-issuer (our pool) and audience (our app client). Verified end-to-end: a request with
-**no token returns `401`**, and a request carrying a valid Cognito ID token returns
-`200` and reaches the Lambda. Live URL printed via the `api_base_url` output.
-**Next: Phase 5 — Bedrock + Guardrails (connect the model; parse the prompt from the
-request body; add PII / injection / toxicity filtering).**
+**Phase 5 (Bedrock + Guardrails — the model, behind a safety filter) — COMPLETE.**
+The Lambda now calls **Claude Haiku 4.5** on **Amazon Bedrock** via the Converse API,
+using the `us.` cross-region inference profile. Every call runs through an **Amazon
+Bedrock Guardrail** (`bedrock.tf`): content filters for hate/insults/sexual/violence/
+misconduct and **prompt-injection** detection, plus a **PII filter** that anonymizes
+emails/phones and blocks SSNs and card numbers. The handler parses the prompt from the
+HTTP body, attaches the guardrail to the model call, and reports `blocked` when the
+guardrail intervenes. Lambda permissions are least-privilege — scoped to this one model
+(in each cross-region destination) and this one guardrail, never `*`. Verified
+end-to-end through `POST /chat`: a normal prompt is **answered**, a prompt-injection
+attempt is **blocked**, and a prompt containing an SSN is **blocked**.
+**Next: Phase 6 — Observability & alerting (CloudWatch logging of metadata + the
+guardrail trace, SNS alerts on attack patterns).**
 
-_Known trade-off:_ the user pool has MFA `OFF` and uses `USER_PASSWORD_AUTH` for easy
-CLI testing — both are flagged for the Phase 6 hardening pass.
+_Known trade-offs (flagged for the Phase 6 hardening pass):_ the user pool has MFA
+`OFF` and uses `USER_PASSWORD_AUTH` for easy CLI testing; content filters are set to
+`HIGH` (may cause false positives — tune per use-case); guardrail PII actions
+currently cover a starter set of entity types.
 
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.
