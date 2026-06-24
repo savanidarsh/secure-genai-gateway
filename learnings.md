@@ -538,6 +538,36 @@ Lambda. No token = bounced at the door (`401`), Lambda never runs.
  Lambda (Phase 3)                    = the guard who handles the request
 ```
 
+### Request flow (the flowchart — 401 vs 200)
+```
+                Your app (curl / browser)  — the visitor
+                         |
+                         | 1. log in (email + password)
+                         v
+                 Cognito user pool  — checks id, prints the JWT
+                         |
+                         | 2. returns tokens — keep the ID token
+                         v
+                 App holds the ID token  — the wristband
+                         |
+                         | 3. POST /chat  +  token in Authorization header
+                         v
+            API Gateway — JWT authorizer  (the bouncer)
+            checks: issuer · audience · expiry
+                   /                            \
+           valid token                          no / bad token
+                |                                     |
+                v                                     v
+        Lambda (the guard runs)              401 Unauthorized
+                |                            (bounced — Lambda never runs)
+                | reply
+                v
+        200 OK — reply returned to the app
+```
+> One sentence to remember it all: **"Wristband from the booth, checked by the
+> bouncer, before the guard ever sees you."** Colours in the live diagram: blue =
+> Cognito (issues), teal = authorizer (decides), green vs red = the two outcomes.
+
 ### The pieces (Terraform -> AWS)
 - `aws_cognito_user_pool` — the guest directory (email login, strong password policy).
 - `aws_cognito_user_pool_client` — the **registered lane** an app uses to log in.
@@ -634,6 +664,20 @@ Phase 5 job.
 - *Why did Terraform complain about my resource block?* A `resource` was typed
   **inside** another `resource`. Blocks can't nest — each must start at column 1 after
   the previous block's closing `}`. Two siblings, not one-inside-the-other.
+- *What is `/chat`?* It's a **path** (a.k.a. route) — a labelled doorway on the API,
+  like a sign over a service window. Not special to AWS; I named it myself (could've
+  been `/ask`). The full address is base URL + path:
+  `https://...amazonaws.com/chat`. Right now it's the only door open — knocking
+  anywhere else returns `404 Not Found`.
+- *Who uses/references `/chat`?* The **caller** (the client side). `curl`, or a future
+  web/mobile app, writes `/chat` into the request URL to pick the right doorway. It's a
+  shared label: the **caller writes** it, and **API Gateway listens for** it (our
+  `route "POST /chat"`). Both sides must agree on the exact spelling or it's a 404. The
+  human end-user never sees it — it lives in the app's code.
+- *Is the doorway name how you call the appropriate API?* Almost — it picks the right
+  **route inside the same API**, not a different API. One building (one API), several
+  labelled windows (`/chat`, `/login`, `/history`), each steering to its own handler.
+  We've built exactly one window so far: `/chat` -> Lambda.
 
 ---
 
