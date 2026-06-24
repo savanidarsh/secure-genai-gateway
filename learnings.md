@@ -512,4 +512,130 @@ group lives in CloudWatch; one role can carry many policies; "who may wear it"
 
 ---
 
-*(Next: Phase 4 — Cognito + API Gateway: the ID check and the only door in.)*
+---
+
+## Phase 4 — Cognito + API Gateway (the ID check and the only door in)
+
+### What we built (and why)
+A user can no longer talk to the Lambda directly. Now they must (1) prove who they
+are at **Cognito** and get a token, then (2) knock on the **API Gateway** front door
+and show that token, where a **JWT authorizer** checks it before anything reaches the
+Lambda. No token = bounced at the door (`401`), Lambda never runs.
+
+### The nightclub model
+```
+ User's app (curl/browser)          = a visitor
+   |  logs in (quotes app client ID)
+   v
+ Cognito user pool                   = ID desk + guest list + wristband printer
+   |  returns ID / access / refresh tokens
+   v
+ API Gateway (HTTP API)              = the only front door
+   |  JWT authorizer = the bouncer (checks issuer + audience + expiry)
+   v
+ Lambda integration (AWS_PROXY)      = hallway to the guard
+   v
+ Lambda (Phase 3)                    = the guard who handles the request
+```
+
+### The pieces (Terraform -> AWS)
+- `aws_cognito_user_pool` — the guest directory (email login, strong password policy).
+- `aws_cognito_user_pool_client` — the **registered lane** an app uses to log in.
+  `generate_secret = false` because a CLI/browser app can't hide a secret.
+- `aws_apigatewayv2_api` (`protocol_type = "HTTP"`) — the door.
+- `aws_apigatewayv2_integration` (`AWS_PROXY`, payload `2.0`) — the hallway to Lambda.
+- `aws_lambda_permission` — lets the API Gateway *service* invoke the Lambda
+  (resource-based permission — the OTHER direction from the execution role).
+- `aws_apigatewayv2_authorizer` (`JWT`) — the bouncer. `jwt_configuration` pins
+  `audience` (our app client ID) and `issuer` (our pool's URL).
+- `aws_apigatewayv2_route` (`POST /chat`, `authorization_type = "JWT"`) — the rule
+  that actually *stations* the bouncer on this route.
+- `aws_apigatewayv2_stage` (`$default`, `auto_deploy = true`) — publishes the URL.
+
+### The two-direction permission idea (important)
+```
+Execution role (Phase 3)    = the guard's OWN keyring   -> what the Lambda CAN DO
+Lambda permission (Phase 4) = a note at the guard's desk -> WHO may invoke the Lambda
+```
+People forget the second one and then get `500`s / `AccessDenied` from API Gateway.
+
+### Why the ID token, not the access token
+The authorizer is configured with `audience = app client ID`. Cognito's **ID token**
+carries that value in its `aud` claim; the **access token** does not. So only the ID
+token passes audience validation. (Classic gotcha.)
+
+### The test that proves it
+```
+no Authorization header  -> HTTP 401 Unauthorized   (lock works)
+valid ID token in header -> HTTP 200 OK             (reaches Lambda)
+```
+`prompt_length: 0` on the 200 is expected: with proxy + payload 2.0 the prompt now
+arrives in `event["body"]` (a JSON string), not `event["prompt"]`. Parsing is a
+Phase 5 job.
+
+### Alternatives considered
+- **REST API (API Gateway v1)** instead of HTTP API — more security knobs (WAF,
+  request validation, resource policies) but more boilerplate and slightly pricier.
+  Rejected for now: HTTP API has a native JWT authorizer and is the simplest correct
+  fit. (Revisit if we need WAF in front.)
+- **Client secret on the app client** — adds an app-level password, but a CLI/browser
+  can't keep it hidden, so it's false security. Rejected -> `generate_secret = false`.
+- **`USER_SRP_AUTH`** (password never leaves the device) — more secure than
+  `USER_PASSWORD_AUTH`, but needs a real client SDK to do the math, so it's awkward to
+  test from raw CLI. Used `USER_PASSWORD_AUTH` for learning; flagged for production.
+- **Custom Lambda authorizer** instead of the built-in JWT authorizer — more flexible
+  but is code we'd have to write, secure, and maintain. Rejected: the managed JWT
+  authorizer validates Cognito tokens for free.
+
+### Memory Tricks (Phase 4)
+- "The **app client is the lane**; **Cognito is the booth** that prints the wristband."
+- "**A secret you have to hand to the customer isn't a secret.**" (`generate_secret = false`)
+- **Two passwords:** the *user's* password vs the *app's* client secret — different things.
+- "Execution role = the guard's keyring (what he opens). Lambda permission = the note
+  at his desk (who may ring his bell)." Two directions.
+- Bouncer checks **issuer** (which booth) + **audience** (which lane) + **expiry**.
+- "**Use the ID token, not the access token** — only the ID token carries `aud`."
+- "**401 without a wristband = success.** The lock works."
+- "`POST /chat` = drop a message at the **/chat window** using the **POST** action."
+- "Resources are **siblings, never nested** — two appliances side by side, not a
+  microwave inside a fridge."
+- "**Concept in your head, exact name from the docs, `validate` to confirm.**"
+
+### Doubts I Asked (Q&A)
+- *`generate_secret = false` — what's the secret?* There are **two** passwords: the
+  *user's* password (proves the human) and the *client secret* (an app-level password
+  that proves the app). A secret only helps if it can be hidden — fine on a backend
+  server, useless in a CLI/browser where anyone can read the code. So we skip it.
+- *Does the app client hand the JWT to the user?* No. **Cognito** issues the tokens;
+  the app client is just the registered lane the login goes through. You get three
+  tokens: **ID** (who you are — the wristband we check), **access** (what you may
+  access), **refresh** (to get fresh ones when they expire ~1 hr).
+- *Is the app client like an HTTP client / is it the browser or CLI?* No. The
+  browser/CLI is the running **HTTP client** (the visitor). The **app client** is a
+  *config record in Cognito* — the approved doorway the visitor must use. (And both
+  are different from the **HTTP API**, which is API Gateway, the front door.)
+- *Is `aws_apigatewayv2_api` a name found in AWS?* It's a **Terraform** name
+  (`provider_service_thing`). `apigatewayv2` = AWS's name for API Gateway **v2** (HTTP
+  + WebSocket). In the Console it shows as an **HTTP API**. Confirm any name on the
+  Terraform Registry docs.
+- *Do I need to memorize AWS service names to write Terraform?* No — you bring the
+  *concept*, the **docs** give the exact name + arguments, and `terraform validate`
+  catches a wrong name instantly. Keep the docs tab open; everyone looks them up.
+- *What does `route_key = "POST /chat"` mean?* `/chat` is the **address** (a window);
+  `POST` is the **action** (sending data in, vs `GET` = reading). Only that exact
+  combination is handled; anything else is a 404.
+- *Are the outputs just for the test?* No — they don't create anything (just print
+  values), they cost nothing, and the Phase 7 CI/CD pipeline reads them too. Never put
+  secrets in outputs (mark `sensitive = true` if you must).
+- *Why was my edit not showing up?* The file genuinely wasn't saved (same timestamp /
+  byte count on disk). Fix: **Ctrl+S** (an unsaved tab shows a white dot), and confirm
+  you're editing the file at the real project path. Lesson: the saved file on disk is
+  the source of truth — `terraform validate` reads *that*, not the editor buffer.
+- *Why did Terraform complain about my resource block?* A `resource` was typed
+  **inside** another `resource`. Blocks can't nest — each must start at column 1 after
+  the previous block's closing `}`. Two siblings, not one-inside-the-other.
+
+---
+
+*(Next: Phase 5 — Bedrock + Guardrails: connect the model, parse the prompt from the
+request body, and add PII / injection / toxicity filtering.)*

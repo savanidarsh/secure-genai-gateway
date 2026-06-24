@@ -73,8 +73,14 @@ secure-genai-gateway/
 ├── README.md               # this file
 ├── plan.md                 # full plan, architecture, phases, checklist
 ├── learnings.md            # per-phase notes, memory tricks, Q&A
+├── src/
+│   └── handler.py         # Lambda handler (the gateway "brain")
 └── terraform/
-    ├── main.tf             # provider + backend config + resources
+    ├── main.tf            # provider + backend config + S3 buckets
+    ├── lambda.tf          # Lambda function + IAM role + log group
+    ├── cognito.tf         # Cognito user pool + app client (authentication)
+    ├── apigateway.tf      # HTTP API + integration + JWT authorizer + route + stage
+    ├── outputs.tf         # api_base_url, user_pool_id, app_client_id
     ├── .terraform.lock.hcl # committed: exact provider versions + checksums
     ├── .terraform/         # IGNORED: downloaded provider plugins
     └── terraform.tfstate   # IGNORED local leftover (real state lives in S3)
@@ -140,12 +146,18 @@ Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
 
 ## Status
 
-**Phase 3 (Lambda — the gateway's brain) — COMPLETE.**
-Lambda `secure-genai-gateway-handler` (Python 3.13) is live, deployed via Terraform
-(`lambda.tf` + `src/handler.py`). It runs under a least-privilege IAM role whose
-only permission is writing to its own CloudWatch log group (14-day retention). The
-skeleton handler acknowledges requests and logs prompt *length*, never content.
-Test-invoke returns `200`; logs confirmed in CloudWatch.
-**Next: Phase 4 — Cognito + API Gateway (the ID check and the only door in).**
+**Phase 4 (Cognito + API Gateway — the ID check and the only door in) — COMPLETE.**
+Users authenticate against an **Amazon Cognito** user pool (`cognito.tf`) and receive
+JWT tokens via a public app client. An **HTTP API** (API Gateway v2, `apigateway.tf`)
+is the single entry point, wired to the Lambda through a proxy integration. The
+`POST /chat` route is protected by a **JWT authorizer** that validates each token's
+issuer (our pool) and audience (our app client). Verified end-to-end: a request with
+**no token returns `401`**, and a request carrying a valid Cognito ID token returns
+`200` and reaches the Lambda. Live URL printed via the `api_base_url` output.
+**Next: Phase 5 — Bedrock + Guardrails (connect the model; parse the prompt from the
+request body; add PII / injection / toxicity filtering).**
+
+_Known trade-off:_ the user pool has MFA `OFF` and uses `USER_PASSWORD_AUTH` for easy
+CLI testing — both are flagged for the Phase 6 hardening pass.
 
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

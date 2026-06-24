@@ -84,9 +84,18 @@ security desk in front:
 - [x] Declare `hashicorp/archive` provider; `archive_file` to zip code + `aws_lambda_function` resource
 - [x] `terraform apply` (4 added); test-invoke returned 200; confirmed logs in CloudWatch
 
-### Phase 4 — Cognito + API Gateway
-- [ ] Cognito user pool (authentication)
-- [ ] API Gateway in front of Lambda, secured by Cognito
+### Phase 4 — Cognito + API Gateway ✅
+- [x] Cognito user pool (`cognito.tf`) — email login, strong password policy, email recovery
+- [x] Cognito app client (`generate_secret = false`, USER_PASSWORD + REFRESH auth flows)
+- [x] HTTP API (API Gateway v2) — `apigatewayv2_api`, protocol `HTTP`
+- [x] Lambda proxy integration (`AWS_PROXY`, payload format `2.0`)
+- [x] `aws_lambda_permission` — let API Gateway invoke the Lambda
+- [x] JWT authorizer pointed at Cognito (audience = app client, issuer = pool URL)
+- [x] Protected route `POST /chat` (`authorization_type = "JWT"`)
+- [x] `$default` stage with `auto_deploy = true`
+- [x] Outputs: `api_base_url`, `user_pool_id`, `app_client_id`
+- [x] `apply` (8 added, 0 destroyed); tested: no token → **401**, valid ID token → **200**
+- [ ] (deferred) MFA on the user pool — currently OFF; revisit in Phase 6 hardening
 
 ### Phase 5 — Bedrock + Guardrails
 - [ ] Connect Lambda to Amazon Bedrock
