@@ -27,6 +27,12 @@ provider "aws" {
 
 resource "aws_s3_bucket" "logs" {
   bucket = "secure-genai-gateway-logs-darsh-1522"
+
+  #checkov:skip=CKV_AWS_18:This bucket IS the access-log destination; making it log to itself or a third bucket is circular and adds no value
+  #checkov:skip=CKV2_AWS_61:Cost-hygiene (expiring old versions), not a security control; deferred for this learning project
+  #checkov:skip=CKV2_AWS_62:No consumer needs S3 event notifications for this bucket
+  #checkov:skip=CKV_AWS_144:Cross-region replication is disaster-recovery, out of scope for a solo learning project
+  #checkov:skip=CKV_AWS_145:Encrypted at rest with AES256 (SSE-S3); a customer-managed KMS key adds cost/key-management for marginal gain on these logs
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {
@@ -58,6 +64,11 @@ resource "aws_s3_bucket_versioning" "logs" {
 
 resource "aws_s3_bucket" "tfstate" {
   bucket = "secure-genai-gateway-tfstate-darsh-1522"
+
+  #checkov:skip=CKV2_AWS_61:Cost-hygiene (expiring old versions), not a security control; deferred for this learning project
+  #checkov:skip=CKV2_AWS_62:No consumer needs S3 event notifications for this bucket
+  #checkov:skip=CKV_AWS_144:Cross-region replication is disaster-recovery, out of scope for a solo learning project
+  #checkov:skip=CKV_AWS_145:State is already encrypted at rest with AES256 (SSE-S3); a customer-managed KMS key adds cost/key-management here
 }
 
 resource "aws_s3_bucket_public_access_block" "tfstate" {
@@ -85,4 +96,33 @@ resource "aws_s3_bucket_versioning" "tfstate" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+# Audit trail: record every access to the state bucket, written into the logs bucket.
+resource "aws_s3_bucket_logging" "tfstate" {
+  bucket        = aws_s3_bucket.tfstate.id
+  target_bucket = aws_s3_bucket.logs.id
+  target_prefix = "s3-access/tfstate/"
+}
+
+# A log destination must grant the S3 logging service permission to write to it,
+# or delivery silently fails. Scope it to our account + the access-log prefix only.
+resource "aws_s3_bucket_policy" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowS3ServerAccessLogging"
+        Effect    = "Allow"
+        Principal = { Service = "logging.s3.amazonaws.com" }
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.logs.arn}/s3-access/*"
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        }
+      }
+    ]
+  })
 }

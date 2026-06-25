@@ -17,7 +17,9 @@ resource "aws_iam_role" "lambda_exec" {
 
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/secure-genai-gateway-handler"
-  retention_in_days = 14
+  retention_in_days = 365  # was 14 — CKV_AWS_338 wants >= 1 yr for forensic/audit history
+
+  #checkov:skip=CKV_AWS_158:Logs are encrypted at rest with the AWS-managed key and are metadata-only (no prompt text); a customer-managed KMS key isn't worth the cost here
 }
 
 resource "aws_iam_role_policy" "lambda_logging" {
@@ -51,6 +53,15 @@ resource "aws_lambda_function" "gateway" {
   handler       = "handler.lambda_handler"
   runtime       = "python3.13"
   timeout       = 30
+
+  # Cap simultaneous runs: limits cost + blast radius if the endpoint gets flooded.
+  reserved_concurrent_executions = 10
+
+  #checkov:skip=CKV_AWS_116:Synchronous API Gateway invoke — a dead-letter queue applies to async invokes only
+  #checkov:skip=CKV_AWS_117:Function only calls the public Bedrock API; no private resources to reach, so a VPC adds NAT cost for no security benefit
+  #checkov:skip=CKV_AWS_173:Env vars are non-secret (model/guardrail IDs) and already encrypted at rest by default
+  #checkov:skip=CKV_AWS_272:Code-signing is an enterprise supply-chain control, out of scope for a solo learning project
+  #checkov:skip=CKV_AWS_50:X-Ray tracing is pure observability and would require widening the execution role; consciously deferred
 
   environment {
     variables = {

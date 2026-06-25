@@ -159,9 +159,25 @@ secure least-privilege story; revisit a gated apply job later if wanted.
 - [x] `apply` (4 added, 0 changed, 0 destroyed); verified trust policy via
       `aws iam get-role` (Action/aud/sub all correct)
 
-**7b — Checkov scanning (fail build on insecure config)**
-- [ ] Run Checkov locally on `terraform/`; review + triage findings
-- [ ] Wire Checkov into the pipeline (fail on insecure config)
+**7b — Checkov scanning ✅ (local; pipeline gate is 7c)**
+- [x] Installed Checkov (pip; Windows PATH fix → added Scripts dir to `~/.bashrc`)
+- [x] First scan: **70 passed / 20 failed / 0 parsing errors** on `terraform/`
+- [x] Triaged all 20 (approach: balanced — fix cheap high-value, accept the rest
+      with inline `#checkov:skip=ID:reason`):
+      - **Fixed:** Lambda `reserved_concurrent_executions = 10` (CKV_AWS_115,
+        flood/cost cap); log retention 14→365 (CKV_AWS_338); API Gateway access
+        logging → new log group (CKV_AWS_76); state-bucket access logging → logs
+        bucket + bucket policy granting `logging.s3.amazonaws.com` (CKV_AWS_18)
+      - **Skipped w/ reason (17):** DLQ (CKV_AWS_116 — sync invoke), VPC
+        (CKV_AWS_117 — no private deps), env-var/log/S3 KMS (CKV_AWS_173/158/145 —
+        already AES256 at rest, non-secret), code-signing (CKV_AWS_272), X-Ray
+        (CKV_AWS_50 — avoid widening IAM), S3 replication (CKV_AWS_144), lifecycle
+        (CKV2_AWS_61), event-notifs (CKV2_AWS_62), logs-bucket self-logging
+        (CKV_AWS_18), SNS encryption (CKV_AWS_26 — AWS-managed key breaks alarm
+        delivery; needs CMK)
+- [x] Re-scan clean: **78 passed / 0 failed / 17 skipped**
+- [ ] (7c) Wire Checkov into the GitHub Actions pipeline (fail the build on a new
+      insecure config / unjustified finding)
 
 **7c — GitHub Actions pipeline (plan on the S3 remote state)**
 - [ ] `.github/workflows/` — workflow assuming the OIDC role (no stored keys)

@@ -1125,5 +1125,94 @@ aws iam get-role --role-name secure-genai-gateway-github-actions
 
 ---
 
-*(Next: 7b — Checkov scanning on `terraform/`, then 7c — the GitHub Actions workflow that
-assumes this OIDC role to run `terraform plan` with no stored keys.)*
+### 7b — Checkov security scanning
+
+#### What we built (and why)
+**Checkov** is a *static analysis* tool: it reads the `.tf` files (without building
+anything) and checks them against 1000+ security rules. It's a **home inspector
+reading the blueprints before the house goes up** — catching "no smoke detector"
+on paper, where it's free to fix. The term for this is **"shift left"**: move
+security checks to the *start* of the process, where flaws are cheap. In 7c this
+scan becomes an automatic gate in the pipeline.
+
+#### The mindset (the real lesson)
+A finding is **not an order — it's a question**: *"did you mean to leave this off?"*
+Every finding gets one of two honest answers:
+1. **Fix it** — add the missing setting.
+2. **Accept it** — decide it's not worth it *here*, and leave a signed note so it's
+   a *decision*, not an oversight: `#checkov:skip=CKV_AWS_144:reason`. Next scan it
+   shows as **Skipped** with the reason attached.
+*"Negligent vs informed decision is one comment."* On a public repo this is gold —
+a reviewer sees you weighed each risk.
+
+#### Install gotcha (Windows + Python 3.14)
+`pip install checkov` worked, but `checkov: command not found` — pip dropped
+`checkov.exe` in a `Scripts/` dir not on Git Bash's PATH. Fix: add it to PATH and
+persist in `~/.bashrc`:
+```bash
+export PATH="$PATH:/c/Users/savan/AppData/Local/Python/pythoncore-3.14-64/Scripts"
+echo 'export PATH=...same...' >> ~/.bashrc   # permanent
+```
+
+#### The triage (20 findings → 4 fixed, 17 skipped, 0 failed)
+First scan: **70 passed / 20 failed**. Chose the **balanced** approach: fix the
+cheap high-value items, accept the rest with inline skips.
+
+**Fixed (real security value, low effort):**
+| Check | Fix | Why it matters |
+|---|---|---|
+| CKV_AWS_115 | Lambda `reserved_concurrent_executions = 10` | Circuit breaker: a flood can't spin up thousands of Lambdas → caps cost + blast radius |
+| CKV_AWS_338 | log retention 14 → 365 days | A 3-week-old log is gone when you investigate; a year of tiny JSON lines is pennies |
+| CKV_AWS_76 | API Gateway access logging → new log group | The API's "black box": every call (who/when/route/status), no prompt body |
+| CKV_AWS_18 | state-bucket access logging → logs bucket **+ bucket policy** | Audit who touches state. **Gotcha:** the *destination* bucket must grant `logging.s3.amazonaws.com` permission or delivery silently fails |
+
+**Accepted with inline skip (17):** grouped as —
+- *Not applicable to this architecture:* DLQ (CKV_AWS_116, sync invoke), VPC
+  (CKV_AWS_117, only calls public Bedrock), event-notifications (CKV2_AWS_62),
+  cross-region replication (CKV_AWS_144, DR out of scope), code-signing
+  (CKV_AWS_272, enterprise supply-chain).
+- *Already mitigated / defensible trade-off:* S3 + log-group + env-var KMS
+  (CKV_AWS_145/158/173 — already AES256 at rest, data is non-secret), lifecycle
+  (CKV2_AWS_61, cost-hygiene not security), logs-bucket self-logging (CKV_AWS_18),
+  SNS encryption (CKV_AWS_26 — AWS-managed key breaks alarm delivery; real fix =
+  customer-managed KMS key with a policy allowing `cloudwatch.amazonaws.com`).
+
+Re-scan: **78 passed / 0 failed / 17 skipped.**
+
+#### Memory Tricks (Phase 7b)
+- "**Checkov = a home inspector reading the blueprints before the house is built.**"
+- "**Shift left = catch it cheap, at the start.**"
+- "**A finding is a question, not an order — fix it or sign for it.**"
+- "**`#checkov:skip=ID:reason` turns 'we missed it' into 'we decided'.**"
+- "**Reserved concurrency = a circuit breaker on a flood.**"
+- "**A log you can't look back far enough on isn't an audit trail.**"
+- "**Turning on logging isn't enough — the destination must agree to receive it.**"
+- "**Encrypted-at-rest (AES256) already passes the spirit; KMS is about key *control*, which costs.**"
+
+#### Doubts I Asked (Q&A)
+- *Won't all these skips look like I'm dodging security?* The opposite — an
+  unexplained gap looks negligent; a `#checkov:skip` with a reason proves you
+  considered the risk and made a call. The danger is skipping *without* a reason.
+- *Why fix retention but skip KMS?* Retention is cheap and has real forensic value;
+  KMS (customer-managed keys) adds ~$1/key/mo + key management for data that's
+  already encrypted at rest and isn't secret. Cost/benefit, decided per-item.
+- *Why did the parser fail in the sandbox but not on my machine?* My helper's HCL
+  parser was older than the one your `checkov` shipped with; newer parser handled
+  all files. Lesson: a "parsing error" can be a tooling-version issue, not your code.
+
+#### Phase 7b summary (the 5 things to remember)
+1. Checkov reads your `.tf` and flags insecure config **before** anything is built
+   ("shift left").
+2. Each finding = **fix it** or **accept it with a signed `#checkov:skip` reason** —
+   never an unexplained gap.
+3. The fixes worth making here: **concurrency cap, 1-yr retention, API + state
+   access logging** (real security value, low effort/cost).
+4. The accepts: KMS/VPC/DLQ/replication/etc. — already-mitigated or N/A for this
+   architecture; documented, not ignored.
+5. End state: **0 failed**, 17 justified skips — and a re-scan you can wire into CI
+   in 7c to block any *new* insecure config.
+
+---
+
+*(Next: 7c — the GitHub Actions workflow: assume the 7a OIDC role, run `terraform
+plan`, and run this Checkov scan as a build gate so a new insecure config fails CI.)*

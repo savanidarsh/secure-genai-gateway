@@ -48,4 +48,26 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.gateway.id
   name        = "$default"
   auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api_access.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      routeKey       = "$context.routeKey"
+      status         = "$context.status"
+      protocol       = "$context.protocol"
+      responseLength = "$context.responseLength"
+    })
+  }
+}
+
+# Black box for the API: one JSON line per request (who / when / route / status).
+resource "aws_cloudwatch_log_group" "api_access" {
+  name              = "/aws/apigateway/secure-genai-gateway-access"
+  retention_in_days = 365
+
+  #checkov:skip=CKV_AWS_158:Access logs are metadata-only and already encrypted at rest with the AWS-managed key; a customer-managed KMS key isn't worth the cost here
 }

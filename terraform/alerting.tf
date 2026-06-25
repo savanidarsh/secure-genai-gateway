@@ -3,6 +3,8 @@
 # A topic is the "channel" an alarm shouts into.
 resource "aws_sns_topic" "alerts" {
   name = "secure-genai-gateway-alerts"
+
+  #checkov:skip=CKV_AWS_26:AWS-managed SNS encryption (alias/aws/sns) breaks CloudWatch alarm delivery, and alerts are metadata-only (no PII). Proper fix needs a customer-managed KMS key with a policy allowing cloudwatch.amazonaws.com — flagged as a deferred hardening item.
 }
 
 # Subscribe your email to the topic.

@@ -173,9 +173,17 @@ GitHub Actions assumes via short-lived web-identity tokens — **no AWS access k
 stored in GitHub**. The trust policy is pinned to this exact repo on `main`
 (`sts:AssumeRoleWithWebIdentity` + `aud`/`sub` conditions), so forks cannot assume it;
 permissions are AWS-managed `ReadOnlyAccess` plus scoped state-bucket access for the plan
-lock. Verified via `terraform apply` (4 added) and `aws iam get-role`. **Next: 7b — Checkov
-scanning on `terraform/`, then 7c — the GitHub Actions workflow that assumes this role to
-run `terraform plan`.**
+lock. Verified via `terraform apply` (4 added) and `aws iam get-role`.
+
+_7b — Checkov security scanning:_ **COMPLETE (local; CI gate is 7c).** Static analysis of
+`terraform/` started at 70 passed / 20 failed; triaged every finding (balanced approach).
+**Fixed** the high-value items — Lambda reserved concurrency (flood/cost cap), log retention
+14→365 days, API Gateway access logging, and S3 state-bucket access logging (with the
+destination bucket policy that lets `logging.s3.amazonaws.com` deliver). **Accepted** the
+rest (KMS/VPC/DLQ/replication/SNS-encryption/etc.) as conscious trade-offs, each recorded
+with an inline `#checkov:skip=ID:reason` so the reasoning lives in the code. Re-scan is clean:
+**78 passed / 0 failed / 17 justified skips.** **Next: 7c — the GitHub Actions workflow that
+assumes the OIDC role to run `terraform plan` and runs this Checkov scan as a build gate.**
 
 _Known trade-offs (flagged for the Phase 7 hardening pass):_ the user pool has MFA
 `OFF` and uses `USER_PASSWORD_AUTH` for easy CLI testing; content filters are set to
