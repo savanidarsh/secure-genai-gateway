@@ -1214,5 +1214,91 @@ Re-scan: **78 passed / 0 failed / 17 skipped.**
 
 ---
 
-*(Next: 7c — the GitHub Actions workflow: assume the 7a OIDC role, run `terraform
-plan`, and run this Checkov scan as a build gate so a new insecure config fails CI.)*
+### 7c — GitHub Actions pipeline (CI/CD)
+
+#### What we built (and why)
+A **GitHub Actions** workflow — a robot that runs automatically on every push to
+`main`. Two jobs: (1) **Checkov** scans the Terraform (the security gate), and
+(2) **terraform plan** assumes the 7a OIDC role and shows what would change. Job 2
+only runs if job 1 passed (`needs:`). Security gates the deploy. Vocabulary:
+*workflow* = the recipe (a YAML file in `.github/workflows/`); *job* = steps on a
+fresh throwaway machine (*runner*); *step* = one command (`run:`) or reusable
+*action* (`uses:`). **YAML is indentation-sensitive like Python** — 2 spaces, no tabs.
+
+#### Why this exact shape (it fits the 7a trust policy)
+The OIDC role is pinned to `ref:refs/heads/main`. So:
+- **Checkov needs no AWS** (it only reads files) → runs on every push *and* PR.
+- **terraform plan needs AWS** → runs only on push to `main` (`if:
+  github.event_name == 'push'`), where the token's `sub` matches the trust policy.
+  Trying it on a PR would just fail the auth, so we don't.
+Since I commit straight to `main`, the plan job fires on every push — no Terraform
+change needed.
+
+#### Three things that make OIDC work in the workflow
+1. `permissions: id-token: write` on the plan job — **the line everyone forgets.**
+   Without it GitHub won't mint the token and `configure-aws-credentials` fails
+   with "Could not load credentials." It's the switch that lets the job hold up
+   its passport. Only that one job has it (least privilege).
+2. `role-to-assume: ${{ secrets.AWS_ROLE_ARN }}` — the role ARN, stored as a repo
+   **secret** (not because an ARN is sensitive — it isn't a credential — but to
+   keep the account number out of public workflow code).
+3. **No AWS key anywhere in the file.** Temporary creds are minted per run, gone in
+   ~1 hour. 7a paying off.
+
+#### The bug we hit (a great real lesson)
+First run: **Checkov green, plan red.** OIDC *worked* (the error came from
+`assumed-role/secure-genai-gateway-github-actions/GitHubActions` — we were already
+authenticated). Plan refreshed all 25 resources, then died on **one** action:
+```
+AccessDeniedException: not authorized to perform: bedrock:ListTagsForResource
+```
+AWS-managed **`ReadOnlyAccess` is broad but not complete** — it omits some newer
+read actions (here, reading the guardrail's tags during refresh). Fix = the *right*
+least-privilege move: grant the **one** missing read, scoped to our guardrail —
+not "give it more access." Added `aws_iam_role_policy.github_actions_bedrock_read`
+to `oidc.tf`.
+
+**Chicken-and-egg:** the CI role is read-only — it *can't grant itself* IAM
+permissions. So a human with admin creds runs `terraform apply` locally to add the
+permission. (That same apply also deployed the still-pending 7b hardening.) Then
+push → CI re-runs → **both jobs green**, plan reports no changes (CI confirming live
+AWS matches the code).
+
+#### Memory Tricks (Phase 7c)
+- "**A workflow is a recipe card pinned to the fridge: when X happens, do these steps.**"
+- "**Checkov needs no passport (reads files); plan needs one (touches AWS).**"
+- "**`id-token: write` = permission to hold up your passport** — forget it and OIDC dies."
+- "**Security gates the deploy:** `needs: checkov` — no scan pass, no plan."
+- "**ReadOnlyAccess is broad, not total** — grant the one missing read, scoped."
+- "**A read-only role can't widen itself** — a human with more power applies that change.**"
+- "**Green plan with 'no changes' = CI confirming reality matches the code.**"
+
+#### Doubts I Asked (Q&A)
+- *The plan job failed — did OIDC break?* No — the error was raised *as the assumed
+  role*, so auth succeeded. It failed later on a missing read permission. Read *who*
+  the error is about: it was already "assumed-role/…/GitHubActions".
+- *Why not just give the CI role broader Bedrock/admin access to make it work?*
+  That throws away least privilege. The fix is the single missing **read** action,
+  scoped to the guardrail. Stay narrow on purpose.
+- *Why did I have to apply locally instead of letting CI do it?* The CI role is
+  read-only by design — it can't create IAM policies (and shouldn't; a role that can
+  attach IAM policies can escalate to admin). Privileged changes are a human step.
+
+#### Phase 7c summary (the 5 things to remember)
+1. The pipeline = **Checkov gate** + **terraform plan via OIDC**, plan `needs:` the
+   scan to pass first.
+2. `id-token: write` is mandatory for OIDC; the role ARN rides in a **secret**; **no
+   AWS keys** live in the repo.
+3. The plan job runs **on push to `main`** because that's what the OIDC trust policy
+   allows; Checkov (no AWS) runs everywhere.
+4. `ReadOnlyAccess` missed `bedrock:ListTagsForResource` — fixed with a **scoped,
+   single-action** grant, not broader access.
+5. A **read-only CI role can't widen its own permissions** — a human applies that;
+   then CI goes green and confirms live infra matches code.
+
+---
+
+*(Phase 7 complete. The gateway now authenticates, inspects, blocks/redacts, logs,
+alerts, AND ships through a scanned, keyless CI/CD pipeline. Possible next: a gated
+apply job (GitHub Environment + approval), the deferred SNS CMK, or capturing the
+blocked guardrail category — all optional hardening.)*

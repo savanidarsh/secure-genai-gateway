@@ -179,10 +179,29 @@ secure least-privilege story; revisit a gated apply job later if wanted.
 - [ ] (7c) Wire Checkov into the GitHub Actions pipeline (fail the build on a new
       insecure config / unjustified finding)
 
-**7c — GitHub Actions pipeline (plan on the S3 remote state)**
-- [ ] `.github/workflows/` — workflow assuming the OIDC role (no stored keys)
-- [ ] `terraform plan` on push/PR; Checkov gate
-- [ ] (optional later) gated apply job via GitHub Environment + approval
+**7c — GitHub Actions pipeline ✅**
+- [x] `.github/workflows/terraform-ci.yml` — 2 jobs: `checkov` (gate, no AWS) +
+      `terraform-plan` (needs checkov, push-to-main only, OIDC)
+- [x] Role ARN stored as repo **secret** `AWS_ROLE_ARN` (keeps account ID out of
+      public workflow code; ARN isn't a credential anyway)
+- [x] `permissions: id-token: write` on the plan job (required to mint OIDC token)
+- [x] First run: Checkov ✅, plan ❌ — `ReadOnlyAccess` lacks
+      `bedrock:ListTagsForResource`. Fixed: scoped inline policy
+      `bedrock-tag-read` on the CI role (added to `oidc.tf`); applied locally
+      (CI role can't grant its own perms — chicken/egg). Also applied the pending
+      7b hardening in the same `apply`.
+- [x] Re-run: **both jobs green** — Checkov gate + `terraform plan` via OIDC, no
+      stored keys. End-to-end CI working.
+- [ ] (optional later) gated apply job via GitHub Environment + approval;
+      bump action versions to silence Node 20 deprecation warnings
+
+---
+
+### Phase 7 — COMPLETE ✅
+Secure CI/CD: GitHub→AWS auth via **OIDC** (no long-lived keys, repo+branch-scoped,
+read-only), **Checkov** scanning (0 failed / 17 justified skips) wired as a build
+gate, and a **GitHub Actions** pipeline that runs `terraform plan` on every push to
+`main`. Human still runs `apply` manually.
 
 ---
 

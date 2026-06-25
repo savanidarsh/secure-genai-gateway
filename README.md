@@ -182,8 +182,23 @@ _7b — Checkov security scanning:_ **COMPLETE (local; CI gate is 7c).** Static 
 destination bucket policy that lets `logging.s3.amazonaws.com` deliver). **Accepted** the
 rest (KMS/VPC/DLQ/replication/SNS-encryption/etc.) as conscious trade-offs, each recorded
 with an inline `#checkov:skip=ID:reason` so the reasoning lives in the code. Re-scan is clean:
-**78 passed / 0 failed / 17 justified skips.** **Next: 7c — the GitHub Actions workflow that
-assumes the OIDC role to run `terraform plan` and runs this Checkov scan as a build gate.**
+**78 passed / 0 failed / 17 justified skips.**
+
+_7c — GitHub Actions pipeline:_ **COMPLETE.** `.github/workflows/terraform-ci.yml` runs two
+jobs on every push to `main`: a **Checkov** scan (the security gate, no AWS needed) and a
+**`terraform plan`** that authenticates to AWS via the **OIDC role** (no stored keys) and only
+runs if Checkov passed (`needs:`). The role ARN is held in a repo secret; `id-token: write`
+lets the job mint the short-lived token. A first run surfaced a real least-privilege gap —
+AWS-managed `ReadOnlyAccess` omits `bedrock:ListTagsForResource` — fixed with a single scoped
+read grant on the CI role (applied locally, since a read-only role can't widen itself). Both
+jobs now pass green.
+
+### Phase 7 (CI/CD + security scanning) — COMPLETE ✅
+The gateway now ships through a **keyless, security-scanned CI/CD pipeline**: GitHub→AWS auth
+via OIDC (short-lived, repo+branch-scoped, read-only), Checkov gating insecure config, and
+`terraform plan` on every push to `main`. `apply` remains a manual human step. (Optional
+future hardening: a gated apply job via a GitHub Environment, the deferred SNS customer-managed
+KMS key, and capturing the blocked guardrail category.)
 
 _Known trade-offs (flagged for the Phase 7 hardening pass):_ the user pool has MFA
 `OFF` and uses `USER_PASSWORD_AUTH` for easy CLI testing; content filters are set to
