@@ -120,9 +120,21 @@ security desk in front:
       re-ran apply, succeeded). Tested end-to-end via `POST /chat` with a Cognito
       token: normal prompt → **answered**; injection → **blocked**; SSN → **blocked**
 
-### Phase 6 — Observability & alerting
-- [ ] CloudWatch logging (metadata + redacted prompts — never raw secrets)
-- [ ] SNS alerts on attack patterns
+### Phase 6 — Observability & alerting ✅
+- [x] Structured, redacted logging in `src/handler.py` — `_log()` helper emits one
+      JSON line per request, metadata only (`prompt_length`, never the prompt); block
+      path emits `{"event": "GUARDRAIL_BLOCK", ...}` (the hook for the metric filter)
+- [x] SNS topic `secure-genai-gateway-alerts` + email subscription (`alerting.tf`);
+      confirmed the subscription via the AWS email link
+- [x] CloudWatch Logs metric filter — JSON pattern `{ $.event = "GUARDRAIL_BLOCK" }`
+      → `GuardrailBlocks` metric (namespace `SecureGenAIGateway`, `default_value = "0"`)
+- [x] CloudWatch alarm — `Sum` over 60s, 1 evaluation period, `> 0` → SNS;
+      `treat_missing_data = "notBreaching"`
+- [x] `apply` (4 added, 1 changed, 0 destroyed); tested: normal prompt → no alert;
+      injection → blocked → **alert email received**; logs confirmed redacted
+- [ ] (deferred → Phase 7) KMS-encrypt the SNS topic with a customer-managed key
+      (AWS-managed `alias/aws/sns` breaks CloudWatch alarm delivery)
+- [ ] (deferred → Phase 6.5) capture blocked category via guardrail `trace`
 
 ### Phase 7 — CI/CD + security scanning
 - [ ] GitHub Actions pipeline (plan/apply, using the S3 remote state)

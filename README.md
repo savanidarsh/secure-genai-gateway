@@ -81,6 +81,7 @@ secure-genai-gateway/
     ├── cognito.tf         # Cognito user pool + app client (authentication)
     ├── apigateway.tf      # HTTP API + integration + JWT authorizer + route + stage
     ├── bedrock.tf         # Guardrail (PII/injection/toxicity) + version + Lambda Bedrock IAM
+    ├── alerting.tf        # SNS topic + email sub + metric filter + alarm (attack alerts)
     ├── outputs.tf         # api_base_url, user_pool_id, app_client_id
     ├── .terraform.lock.hcl # committed: exact provider versions + checksums
     ├── .terraform/         # IGNORED: downloaded provider plugins
@@ -147,23 +148,24 @@ Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
 
 ## Status
 
-**Phase 5 (Bedrock + Guardrails — the model, behind a safety filter) — COMPLETE.**
-The Lambda now calls **Claude Haiku 4.5** on **Amazon Bedrock** via the Converse API,
-using the `us.` cross-region inference profile. Every call runs through an **Amazon
-Bedrock Guardrail** (`bedrock.tf`): content filters for hate/insults/sexual/violence/
-misconduct and **prompt-injection** detection, plus a **PII filter** that anonymizes
-emails/phones and blocks SSNs and card numbers. The handler parses the prompt from the
-HTTP body, attaches the guardrail to the model call, and reports `blocked` when the
-guardrail intervenes. Lambda permissions are least-privilege — scoped to this one model
-(in each cross-region destination) and this one guardrail, never `*`. Verified
-end-to-end through `POST /chat`: a normal prompt is **answered**, a prompt-injection
-attempt is **blocked**, and a prompt containing an SSN is **blocked**.
-**Next: Phase 6 — Observability & alerting (CloudWatch logging of metadata + the
-guardrail trace, SNS alerts on attack patterns).**
+**Phase 6 (Observability & alerting — the logbook + the alarm bell) — COMPLETE.**
+The handler now writes **structured, redacted JSON logs** — one line per request with
+metadata only (`prompt_length`, never the prompt text), tagging blocked attacks with
+`{"event": "GUARDRAIL_BLOCK"}`. A CloudWatch **metric filter** (`alerting.tf`) counts
+those lines into a `GuardrailBlocks` metric, and a CloudWatch **alarm** (any block in a
+60-second window) notifies an **SNS topic** that emails the operator. Detection lives in
+infrastructure, not app code, so alerting can be re-tuned without redeploying the Lambda.
+Verified end-to-end: a normal prompt is answered with **no alert**, while a prompt-injection
+attempt is **blocked** and triggers an **alert email** within ~1–3 minutes; logs confirmed
+to contain no raw prompt text. **Next: Phase 7 — CI/CD + security scanning (GitHub Actions
+plan/apply on the S3 remote state, Checkov gating insecure config, OIDC to replace
+long-lived keys).**
 
-_Known trade-offs (flagged for the Phase 6 hardening pass):_ the user pool has MFA
+_Known trade-offs (flagged for the Phase 7 hardening pass):_ the user pool has MFA
 `OFF` and uses `USER_PASSWORD_AUTH` for easy CLI testing; content filters are set to
-`HIGH` (may cause false positives — tune per use-case); guardrail PII actions
-currently cover a starter set of entity types.
+`HIGH` (may cause false positives — tune per use-case); the SNS topic is **not yet
+KMS-encrypted** (alerts are metadata-only, and the free AWS-managed key breaks alarm
+delivery — needs a customer-managed key); the alarm logs *that* a block happened, not yet
+*which category* (guardrail `trace` is a deferred Phase 6.5 polish).
 
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

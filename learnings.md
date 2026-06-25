@@ -837,5 +837,166 @@ write only the profile + one region and then chase phantom `AccessDenied` errors
 
 ---
 
-*(Next: Phase 6 — Observability & alerting: log metadata + the guardrail trace to
-CloudWatch, and raise SNS alerts on attack patterns.)*
+---
+
+## Phase 6 — Observability & Alerting (the logbook + the alarm bell)
+
+### What we built (and why)
+Up to now the guard *acted* (blocked attacks) but never *told anyone*. Phase 6 adds
+the security desk's **logbook** and **alarm bell**: every request is written down as
+a structured, redacted note, and the moment the guardrail blocks an attack, an email
+lands in our inbox. Build order: log honestly → count the bad notes → alarm on the
+count → email. **Detection lives in infrastructure, not app code** — so we can re-tune
+alerting later without redeploying the Lambda.
+
+### The chain (one blocked attack → one email)
+```
+Lambda logs {"event":"GUARDRAIL_BLOCK"}   <- STEP 1 (the only CODE)
+        v
+CloudWatch Logs stores the line           <- existing log group (Phase 3)
+        v
+Metric filter sees the label, +1 a metric <- STEP 3
+        v
+CloudWatch alarm: Sum>0 in 60s -> ALARM   <- STEP 3
+        v
+SNS topic -> email to me                  <- STEP 2
+```
+The whole relay hinges on **one exact word**: the filter pattern must match the label
+the code writes — `GUARDRAIL_BLOCK`. One typo on either side and no email ever comes.
+
+### The pieces (Terraform -> AWS)
+- `src/handler.py` — added a `_log(event_type, request_id, **fields)` helper that emits
+  **one JSON line per request**, metadata only (`prompt_length`, never the prompt). The
+  block path emits `{"event": "GUARDRAIL_BLOCK", ...}` — the hook the filter matches.
+- `aws_sns_topic "alerts"` — the notification **channel** (a megaphone).
+- `aws_sns_topic_subscription "email"` — wires my inbox to the topic. Email subs start
+  as `PendingConfirmation`; **AWS emails a confirm link I must click** (anti-spam) or it
+  silently drops every alert.
+- `aws_cloudwatch_log_metric_filter "guardrail_block"` — attached to the Lambda log
+  group; JSON pattern `{ $.event = "GUARDRAIL_BLOCK" }` turns matching log lines into a
+  `+1` on the `GuardrailBlocks` metric (namespace `SecureGenAIGateway`). `default_value
+  = "0"` keeps the metric continuous so the alarm evaluates cleanly.
+- `aws_cloudwatch_metric_alarm "guardrail_block"` — watches that metric: `Sum` over a
+  `period = 60` window, `evaluation_periods = 1`, `threshold = 0`, `GreaterThanThreshold`
+  → fires on the **first** minute with any block. `treat_missing_data = "notBreaching"`
+  keeps it calm when idle. `alarm_actions = [topic.arn]` → publishes → email.
+
+### The three joins that must line up (the failure points)
+```
+code label   "GUARDRAIL_BLOCK"  ==  filter pattern  $.event = "GUARDRAIL_BLOCK"
+filter metric name/namespace    ==  alarm metric_name / namespace
+alarm alarm_actions             ==  the SNS topic ARN
+```
+If the relay is silent, suspect one of these three before anything else.
+
+### Lambda is BEFORE the guardrail — and it CALLS the guardrail
+A point that confused me: the guardrail isn't a separate hop the user reaches on their
+own. The request hits **Lambda first**; Lambda then calls Bedrock *with* `guardrailConfig`
+attached, and Bedrock runs guardrail-in → model → guardrail-out and hands the verdict
+**back to Lambda**. That's *why* only Lambda can write the `GUARDRAIL_BLOCK` note — it's
+the only thing that sees the verdict. Security bonus: since the **only** path to the
+model is through Lambda, and Lambda always attaches the guardrail, no caller can reach
+the model while skipping the filter.
+
+### The bucket-and-marbles model of the alarm (explain-like-I'm-14)
+- `period = 60` — each **bucket** holds one minute of marbles; one marble per blocked
+  attack. Fresh empty bucket every minute.
+- `statistic = "Sum"` — count the marbles in the bucket.
+- `evaluation_periods = 1` — **one** bad bucket is enough to yell (no "wait and see").
+- `threshold = 0` + `GreaterThanThreshold` — a bucket with even one marble = yell.
+- Read together: *"Every minute, count the blocked attacks; the first minute with even
+  one → ring the bell."* Security wants `1`, not "3 in a row," because an attacker at the
+  door is never a fluke.
+
+### Alarm behavior that surprises everyone
+The alarm emails on the **transition** OK→ALARM, **not once per attack**. Three blocks in
+one minute = **one** email. To get a *second* email the metric must drop to 0 for a window
+(alarm returns to OK), then breach again. *"The bell rings when the fire starts, not once
+per flame."* This is the decoupling paying off — no email storm during an attack flood.
+
+### The golden rule of security logging
+**Log enough to investigate, never enough to leak.** The prompt may contain the exact
+SSN/secret the guardrail exists to catch — so we log its *length*, never its *contents*.
+If logging stays redacted, CloudWatch is a safe audit trail; the day someone "just
+temporarily" logs the raw prompt to debug, the logbook becomes the breach.
+
+### The test that proves it
+```
+normal prompt ("capital of France?")  -> 200 {"status":"ok"}      -> NO email   (quiet when fine)
+injection ("ignore all instructions") -> 200 {"status":"blocked"} -> email in ~1-3 min
+```
+Also saw the auth layer work mid-test: an expired ID token returned `401 ... the token
+has expired` from the JWT authorizer **before Lambda ran** — re-mint with `initiate-auth`.
+
+### Alternatives considered
+- **Metric filter + alarm + SNS (chosen)** vs **Lambda publishes to SNS directly.**
+  Direct-publish is simpler and instant (an email per block, seconds) but bakes alerting
+  into app code, needs an `sns:Publish` IAM grant, gives no reusable metric/graph, and
+  floods you during an attack burst. The filter/alarm path decouples detection from the
+  app, yields a tunable metric + dashboard, and de-dupes bursts into one alarm — the way
+  a real security team builds it. Trade-off accepted: ~1-2 min latency.
+- **KMS-encrypting the SNS topic** — deferred. Our alerts are metadata-only (no PII), and
+  the *free* option (`alias/aws/sns`, the AWS-managed key) actually **breaks** CloudWatch
+  alarm delivery (its key policy doesn't let CloudWatch publish). Proper encryption needs
+  a **customer-managed** KMS key with a policy granting `cloudwatch.amazonaws.com`.
+  Flagged as a Phase 7 hardening item, not worth derailing the pipeline now.
+- **Capturing the blocked category** (PROMPT_ATTACK vs PII vs toxicity) via guardrail
+  `trace` — richer "attack patterns," but adds parsing + more verbose logs. Deferred to a
+  Phase 6.5 polish once the core pipeline is proven.
+
+### Memory Tricks (Phase 6)
+- "**Log enough to investigate, never enough to leak.**" (length, not contents)
+- "**One word holds the whole chain together:** the filter must match the code's label,
+  `GUARDRAIL_BLOCK`."
+- "**Only the top box is code; the rest is wiring you can re-tune later.**"
+- "**Bucket per minute, marble per attack; first bucket with a marble → ring the bell.**"
+- "**The bell rings when the fire starts, not once per flame.**" (alarm = transition)
+- "**SNS is a megaphone: build the channel once, plug in listeners later.**"
+- "**Confirm the email or the alarm shouts into the void.**" (PendingConfirmation)
+- "**Lambda is before the guardrail and it's the one holding the X-ray remote.**"
+
+### Doubts I Asked (Q&A)
+- *Is the Lambda before or after the guardrail?* **Before — and it calls the guardrail.**
+  The request reaches Lambda first; Lambda calls Bedrock with `guardrailConfig`, Bedrock
+  runs guardrail→model→guardrail and returns the verdict to Lambda. The guardrail is
+  wrapped *inside* Lambda's Bedrock call, not a separate door. That's why only Lambda can
+  log the block, and why no caller can reach the model while skipping the filter.
+- *What do `statistic`/`period`/`evaluation_periods`/`threshold` mean?* They define
+  "what counts as bad enough to alarm." Sum = add the per-window counts; period = the
+  window size (60s buckets); evaluation_periods = how many bad windows in a row before
+  ringing (1 = no second chances); threshold (with `GreaterThanThreshold`) = alarm when
+  Sum > 0. Together: *"every 60s, add the blocks; one bad minute → ring."*
+- *Explain `period`/`evaluation_periods` like I'm 14.* `period = 60`: a fresh bucket each
+  minute, one marble per blocked attack. `evaluation_periods = 1`: a single bucket with
+  any marble is enough to yell — no waiting to see if it keeps happening. (Set it to 3 to
+  ignore brief blips, but for security you yell the first time.)
+- *Why didn't my first `curl` print anything?* `$API_URL` was empty — env vars die with
+  the terminal, and `-s` (silent) hid the failed request. Re-`export API_URL=...` from
+  the `terraform output`, drop the trailing slash, and add `-i` to see the status line.
+- *Why did I get 401 "the token has expired"?* Cognito ID tokens last ~1 hour; the JWT
+  authorizer rejected the stale one **before Lambda ran** (the lock working). Re-mint with
+  `aws cognito-idp initiate-auth ...`.
+- *What was the problem with the tokens earlier — full story?* There were **two separate
+  problems**, easy to confuse:
+  1. **Blank curl output — NOT a token issue.** `$API_URL` was *empty* (env vars die with
+     the terminal), so the request went nowhere, and `-s` (silent) hid the error. Fix:
+     re-`export API_URL=...` (drop the trailing slash). Add `-i` to see the status line.
+  2. **`401 ... the token has expired` — the real token issue.** The ID token is a paper
+     **wristband** proving "this is me," stapled to every request via the `Authorization`
+     header. It has an **expiry baked in** (the `exp` claim) — Cognito ID tokens last
+     **~1 hour**. My `ID_TOKEN` was left over from an earlier session, so `exp` was in the
+     past; the JWT authorizer (the bouncer) read it, saw it was stale, and bounced me
+     **before Lambda ran**. Fix: re-mint a fresh token with `initiate-auth`.
+  **Why expire on purpose (the security why):** short life limits the blast radius if a
+  token leaks — a stolen wristband is useless within the hour, vs a never-expiring token
+  that's a permanent skeleton key. The 401 was the system protecting me, not a bug. Memory
+  trick: *"Wristband good for one hour; after that the bouncer tears it off — go back to the
+  booth for a new one."* Upgrade for later (flagged): use the **refresh token** (longer-
+  lived) to silently renew instead of re-sending username/password each hour; for CLI
+  testing, just re-running `initiate-auth` is simpler.
+
+---
+
+*(Next: Phase 7 — CI/CD + security scanning: a GitHub Actions pipeline that runs
+Terraform on the S3 remote state, Checkov gating insecure config, and OIDC to replace
+long-lived IAM keys.)*

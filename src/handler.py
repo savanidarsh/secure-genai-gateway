@@ -16,6 +16,12 @@ GUARDRAIL_ID = os.environ["GUARDRAIL_ID"]
 GUARDRAIL_VERSION = os.environ["GUARDRAIL_VERSION"]
 
 
+def _log(event_type, request_id, **fields):
+    """Emit ONE structured JSON line. Metadata only — never the prompt text."""
+    logger.info(json.dumps(
+        {"event": event_type, "request_id": request_id, **fields}))
+
+
 def _response(status_code, body):
     return {
         "statusCode": status_code,
@@ -25,28 +31,25 @@ def _response(status_code, body):
 
 
 def lambda_handler(event, context):
-    logger.info("Gateway invoked.")
+    request_id = context.aws_request_id
 
-    # The caller's request arrives as a JSON string in the HTTP body.
     try:
         data = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
+        _log("BAD_REQUEST", request_id, reason="invalid_json")
         return _response(400, {"error": "Body must be valid JSON."})
 
     prompt = data.get("prompt", "")
     if not prompt:
+        _log("BAD_REQUEST", request_id, reason="missing_prompt")
         return _response(400, {"error": "Missing 'prompt' in request body."})
 
-    logger.info("Received a prompt of length %d.", len(prompt))
+    _log("REQUEST", request_id, prompt_length=len(prompt))
 
-    # Call the model THROUGH the guardrail: Bedrock checks the input,
-    # runs Claude, then checks the output — all in this one call.
     try:
         result = bedrock.converse(
             modelId=MODEL_ID,
-            messages=[
-                {"role": "user", "content": [{"text": prompt}]}
-            ],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
             guardrailConfig={
                 "guardrailIdentifier": GUARDRAIL_ID,
                 "guardrailVersion": GUARDRAIL_VERSION,
@@ -54,15 +57,14 @@ def lambda_handler(event, context):
         )
     except Exception:
         logger.exception("Bedrock call failed.")
+        _log("UPSTREAM_ERROR", request_id)
         return _response(502, {"error": "Upstream model error."})
 
-    # Whatever text came back (the answer, OR the guardrail's block message).
     answer = result["output"]["message"]["content"][0]["text"]
 
-    # Did the guardrail step in?
     if result.get("stopReason") == "guardrail_intervened":
-        logger.warning("Guardrail blocked this request.")
+        _log("GUARDRAIL_BLOCK", request_id, prompt_length=len(prompt))
         return _response(200, {"status": "blocked", "message": answer})
 
-    logger.info("Returning an answer of length %d.", len(answer))
+    _log("ANSWER", request_id, answer_length=len(answer))
     return _response(200, {"status": "ok", "answer": answer})
