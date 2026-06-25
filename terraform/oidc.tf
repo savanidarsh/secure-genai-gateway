@@ -79,3 +79,23 @@ resource "aws_iam_role_policy" "github_actions_state" {
     ]
   })
 }
+
+# AWS-managed ReadOnlyAccess omits this newer Bedrock read, which `terraform plan`
+# calls to refresh the guardrail's tags. Grant just that one read, scoped to our
+# guardrail. Still strictly read-only.
+resource "aws_iam_role_policy" "github_actions_bedrock_read" {
+  name = "bedrock-tag-read"
+  role = aws_iam_role.github_actions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "BedrockListTags"
+        Effect   = "Allow"
+        Action   = "bedrock:ListTagsForResource"
+        Resource = aws_bedrock_guardrail.gateway.guardrail_arn
+      }
+    ]
+  })
+}
