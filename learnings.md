@@ -997,6 +997,133 @@ has expired` from the JWT authorizer **before Lambda ran** — re-mint with `ini
 
 ---
 
-*(Next: Phase 7 — CI/CD + security scanning: a GitHub Actions pipeline that runs
-Terraform on the S3 remote state, Checkov gating insecure config, and OIDC to replace
-long-lived IAM keys.)*
+## Phase 7 — CI/CD + Security Scanning (in progress)
+
+> **Repo going public.** This repo will be linked from my resume, so it will be made
+> **public**. That single fact reshaped the security design: the trust policy is pinned
+> to my exact repo, and the rule "never commit a secret" goes from important to
+> non-negotiable (a public repo exposes the *entire git history*, not just current
+> files). Before going public we audited history + content — clean: no state, tfvars,
+> `.env`, keys, or access-key patterns ever committed; account ID isn't even hardcoded;
+> remote state lives in S3, never in git.
+
+### 7a — OIDC authentication (no more long-lived keys)
+
+#### What we built (and why)
+We want a robot (GitHub Actions, coming in 7c) to run Terraform for us. The naive way is
+to copy my IAM access keys into GitHub as secrets — a real pro refuses that instantly:
+long-lived keys never expire, can leak, and must be rotated by hand. Instead we set up
+**OIDC** so GitHub proves *who it is* and AWS hands back a **temporary ~1-hour badge**.
+No secret is stored anywhere — nothing to leak, nothing to rotate.
+
+#### The nightclub / passport model (explain-like-I'm-14)
+```
+GitHub Actions  --"I'm a workflow on Darsh's repo, here's my signed token"-->  AWS
+                                                                                |
+                          AWS checks its guest list (the trust policy)          |
+                                                                                v
+                                          hands back a 1-hour badge  <----------+
+```
+- **OIDC** = trusting an outside ID-issuer. We told AWS "accept passports from GitHub's
+  passport office" (the identity provider) and wrote a guest list ("only `main` on *my*
+  repo gets in").
+- **No stored password** — trust is based on *identity* (which repo), not a *secret*.
+- "**A door's address isn't a key**" — the role ARN is public-safe; you can't enter
+  unless the guest list names your identity.
+
+#### The pieces (Terraform → AWS), all in `terraform/oidc.tf`
+- `aws_iam_openid_connect_provider.github` — registers GitHub's issuer
+  (`https://token.actions.githubusercontent.com`) with audience `sts.amazonaws.com`.
+  **No `thumbprint_list`** on purpose: since AWS provider v5+, AWS validates GitHub's
+  TLS cert against its own trusted-CA library. Old tutorials hardcode a thumbprint —
+  GitHub rotated it in 2023 and broke everyone. *Hardcoded fingerprints rot.*
+- `aws_iam_role.github_actions` — the role GitHub assumes. Trust policy differs from the
+  Lambda role in three ways:
+  1. `Action = sts:AssumeRoleWithWebIdentity` (not `sts:AssumeRole`) — assumed by an
+     outside web identity, not an AWS service.
+  2. `Principal.Federated = <the OIDC provider ARN>` — "an identity from a trusted
+     outside system."
+  3. A `Condition` that *is* the security: `StringEquals` on `:aud = sts.amazonaws.com`
+     AND `:sub = repo:savanidarsh/secure-genai-gateway:ref:refs/heads/main`. Exact match,
+     no wildcard → a fork (which carries a *different* `sub`) is turned away at the door.
+- `aws_iam_role_policy_attachment.github_actions_readonly` — AWS-managed `ReadOnlyAccess`.
+- `aws_iam_role_policy.github_actions_state` (`tfstate-access`) — scoped Get/Put/Delete on
+  the **state bucket** objects (for the plan lock) + ListBucket. Nothing else writable.
+
+#### Why the pipeline role is READ-ONLY (the design decision)
+The pipeline's job is `terraform plan` — a dry run that only *reads*. I keep running
+`apply` by hand. Two reasons: (1) genuinely least-privilege — even if the pipeline were
+abused it couldn't create/change/delete anything; (2) a role powerful enough to `apply`
+must be able to create+attach IAM policies, and *anything that can do that can escalate
+itself to admin* — so an "apply role" isn't really least-privilege anyway. Read-only
+sidesteps that. The one apparent contradiction: even `plan` takes a short **state lock**
+(a tiny file written then deleted in the state bucket), so the role needs Put/Delete —
+but **only on that one bucket**. *Read the whole house; only allowed to scribble on the
+one notepad.*
+
+#### The test that proves it
+```
+terraform plan  -> Plan: 4 to add, 0 to change, 0 to destroy   (provider + role + 2 policies)
+terraform apply -> Apply complete! Resources: 4 added
+aws iam get-role --role-name secure-genai-gateway-github-actions
+   -> Action = sts:AssumeRoleWithWebIdentity, :aud = sts.amazonaws.com,
+      :sub = repo:savanidarsh/secure-genai-gateway:ref:refs/heads/main   (door correctly scoped)
+```
+
+#### Alternatives considered
+- **Long-lived IAM access keys in GitHub secrets** — the common tutorial path. Rejected:
+  never expire, leak-prone, manual rotation. OIDC's temporary badge is strictly better,
+  *especially* for a public repo.
+- **Hardcoded OIDC thumbprint** — brittle; GitHub rotated it once and broke thousands of
+  pipelines. Omitted; AWS handles the CA.
+- **Wildcard `sub` (`repo:owner/repo:*` or broader)** — convenient but too loose for a
+  public repo. Pinned to exact repo + `main`. (Note: a fork's `sub` names the *fork's*
+  repo, so even `:*` wouldn't grant forks — but exact-match is defense in depth.)
+- **Admin / apply-capable CI role** — simplest, but over-privileged and, per the IAM
+  escalation point above, not meaningfully least-privilege. Chose read-only + manual apply.
+- **Gated apply job via a GitHub Environment + required-reviewer approval** — the clean
+  "real" way to add apply later (the approval doubles as the manual gate). Flagged for 7c
+  if I want auto-apply; not needed now.
+
+#### Memory Tricks (Phase 7a)
+- "**Temporary badge, not a permanent key.**" (OIDC vs stored access keys)
+- "**Hardcoded fingerprints rot.**" (skip `thumbprint_list`)
+- "**Federated = an ID from a trusted outside system; WebIdentity = it knocked holding a
+  signed token.**"
+- "**The token wears a name tag; we only let in `main` from *my* repo.**" (the `sub` claim)
+- "**A door's address isn't a key.**" (role ARN is public-safe)
+- "**Read the whole house; only scribble on the one notepad.**" (read-only + scoped state)
+- "**Anything that can hand out IAM policies can crown itself admin.**" (why apply roles
+  aren't really least-privilege)
+- "**Public repo = the whole history is on display, not just today's files.**"
+
+#### Doubts I Asked (Q&A)
+- *Can I make the repo public now, and will it break anything?* Yes, safe to do anytime —
+  it has **zero effect on the OIDC work** (the role didn't exist yet, and it's scoped to my
+  repo regardless). The real risk isn't OIDC, it's **history**: going public exposes every
+  past commit, so a secret committed and later deleted would still be visible. We audited
+  first — history + content clean — so it's safe. New habit: `git status` / `git diff
+  --staged` before every push now that it's public.
+- *So we read the plan output, and only then apply?* Exactly. `terraform plan` = a dry run
+  that changes nothing and prints a preview (read it like a receipt). `terraform apply` =
+  the real build, and it re-shows the plan and makes you type `yes`. Rhythm: **plan → read
+  it → apply only if it looks right.** The number that matters most is `0 to destroy`.
+- *Is `aws_iam_role_policy_attachment...readonly` a separate step?* No — it's just **one of
+  the four resources** `plan` lists (the one that attaches read-only power to the role), not
+  a command of its own.
+
+#### Phase 7a summary (the 5 things to remember)
+1. OIDC swaps a **permanent stored key** for a **1-hour badge** — nothing to leak or rotate.
+2. The **provider** says "trust GitHub's passport office"; the **role + trust policy** is
+   the guest list ("`main` on *my* repo only").
+3. The `Condition` (`aud` + exact `sub`) is the actual lock — without it, any repo could
+   assume the role.
+4. The CI role is **read-only** (plan only) + scoped state-bucket writes for the lock =
+   least-privilege; I apply manually.
+5. Skip the **thumbprint** (it rots); going **public** makes "never commit secrets" and
+   tight scoping non-negotiable.
+
+---
+
+*(Next: 7b — Checkov scanning on `terraform/`, then 7c — the GitHub Actions workflow that
+assumes this OIDC role to run `terraform plan` with no stored keys.)*

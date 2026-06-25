@@ -82,6 +82,7 @@ secure-genai-gateway/
     ├── apigateway.tf      # HTTP API + integration + JWT authorizer + route + stage
     ├── bedrock.tf         # Guardrail (PII/injection/toxicity) + version + Lambda Bedrock IAM
     ├── alerting.tf        # SNS topic + email sub + metric filter + alarm (attack alerts)
+    ├── oidc.tf            # GitHub OIDC provider + read-only CI role (no stored keys)
     ├── outputs.tf         # api_base_url, user_pool_id, app_client_id
     ├── .terraform.lock.hcl # committed: exact provider versions + checksums
     ├── .terraform/         # IGNORED: downloaded provider plugins
@@ -141,8 +142,15 @@ Phase 7 CI/CD pipeline, which runs Terraform in the cloud (not on the laptop).
   and checksums for reproducible, tamper-checked builds.
 - All resources are built **private and locked-down by default**; both S3 buckets
   have Block Public Access, encryption at rest, and versioning.
-- Long-lived IAM access keys are a temporary, solo-learning trade-off; the plan
-  is to move to short-lived credentials (OIDC) in the CI/CD phase.
+- **CI/CD auth uses OIDC, not stored keys** (`oidc.tf`): GitHub Actions assumes a
+  short-lived role via web identity — no AWS access keys are stored in GitHub. The
+  trust policy is pinned to this exact repo on `main`, and the role is **read-only**
+  (`terraform plan` only); `apply` is still run manually. Long-lived keys remain only
+  for local developer use.
+- This repo is being made **public** (linked from a resume). History + content were
+  audited first — no secrets, state, tfvars, keys, or hardcoded account ID ever
+  committed. Going public makes "never commit a secret" non-negotiable (a public repo
+  exposes the entire git history).
 
 ---
 
@@ -157,9 +165,17 @@ those lines into a `GuardrailBlocks` metric, and a CloudWatch **alarm** (any blo
 infrastructure, not app code, so alerting can be re-tuned without redeploying the Lambda.
 Verified end-to-end: a normal prompt is answered with **no alert**, while a prompt-injection
 attempt is **blocked** and triggers an **alert email** within ~1–3 minutes; logs confirmed
-to contain no raw prompt text. **Next: Phase 7 — CI/CD + security scanning (GitHub Actions
-plan/apply on the S3 remote state, Checkov gating insecure config, OIDC to replace
-long-lived keys).**
+to contain no raw prompt text.
+
+**Phase 7 (CI/CD + security scanning) — IN PROGRESS.** _7a — OIDC authentication:_ **COMPLETE.**
+`oidc.tf` now defines a GitHub OIDC identity provider and a **read-only** IAM role that
+GitHub Actions assumes via short-lived web-identity tokens — **no AWS access keys are
+stored in GitHub**. The trust policy is pinned to this exact repo on `main`
+(`sts:AssumeRoleWithWebIdentity` + `aud`/`sub` conditions), so forks cannot assume it;
+permissions are AWS-managed `ReadOnlyAccess` plus scoped state-bucket access for the plan
+lock. Verified via `terraform apply` (4 added) and `aws iam get-role`. **Next: 7b — Checkov
+scanning on `terraform/`, then 7c — the GitHub Actions workflow that assumes this role to
+run `terraform plan`.**
 
 _Known trade-offs (flagged for the Phase 7 hardening pass):_ the user pool has MFA
 `OFF` and uses `USER_PASSWORD_AUTH` for easy CLI testing; content filters are set to

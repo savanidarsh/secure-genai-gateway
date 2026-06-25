@@ -136,10 +136,37 @@ security desk in front:
       (AWS-managed `alias/aws/sns` breaks CloudWatch alarm delivery)
 - [ ] (deferred → Phase 6.5) capture blocked category via guardrail `trace`
 
-### Phase 7 — CI/CD + security scanning
-- [ ] GitHub Actions pipeline (plan/apply, using the S3 remote state)
-- [ ] Checkov scanning (fail build on insecure config)
-- [ ] OIDC authentication (replace long-lived IAM keys)
+### Phase 7 — CI/CD + security scanning (in progress)
+
+**Context:** repo will be made **public** (resume/recruiters) → trust policy
+scoped tightly; nothing secret ever committed. Decided: pipeline role is
+**read-only** (runs `terraform plan` only); human runs `apply` manually. Most
+secure least-privilege story; revisit a gated apply job later if wanted.
+
+**7a — OIDC authentication (replace long-lived IAM keys) ✅**
+- [x] `terraform/oidc.tf` — `aws_iam_openid_connect_provider.github`
+      (url `token.actions.githubusercontent.com`, audience `sts.amazonaws.com`,
+      **no** thumbprint_list — AWS provider v5+ validates GitHub's CA itself;
+      hardcoded thumbprints rot)
+- [x] `aws_iam_role.github_actions` — trust policy:
+      `sts:AssumeRoleWithWebIdentity`, Principal = Federated OIDC provider,
+      Condition StringEquals `:aud = sts.amazonaws.com` AND
+      `:sub = repo:savanidarsh/secure-genai-gateway:ref:refs/heads/main`
+      (exact match, no wildcard → forks can't assume it)
+- [x] Permissions: AWS-managed `ReadOnlyAccess` attachment + scoped inline
+      `tfstate-access` (Get/Put/Delete on state bucket objects for the plan
+      lock; ListBucket) — nothing else writable
+- [x] `apply` (4 added, 0 changed, 0 destroyed); verified trust policy via
+      `aws iam get-role` (Action/aud/sub all correct)
+
+**7b — Checkov scanning (fail build on insecure config)**
+- [ ] Run Checkov locally on `terraform/`; review + triage findings
+- [ ] Wire Checkov into the pipeline (fail on insecure config)
+
+**7c — GitHub Actions pipeline (plan on the S3 remote state)**
+- [ ] `.github/workflows/` — workflow assuming the OIDC role (no stored keys)
+- [ ] `terraform plan` on push/PR; Checkov gate
+- [ ] (optional later) gated apply job via GitHub Environment + approval
 
 ---
 
