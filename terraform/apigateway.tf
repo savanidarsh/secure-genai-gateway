@@ -62,6 +62,10 @@ resource "aws_apigatewayv2_stage" "default" {
       responseLength = "$context.responseLength"
     })
   }
+  default_route_settings {
+    throttling_rate_limit  = 5  # steady pace: ~5 requests/second
+    throttling_burst_limit = 10 # spike allowance before bouncing extras
+  }
 }
 
 # Black box for the API: one JSON line per request (who / when / route / status).

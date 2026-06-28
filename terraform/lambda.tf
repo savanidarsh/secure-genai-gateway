@@ -17,7 +17,7 @@ resource "aws_iam_role" "lambda_exec" {
 
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/secure-genai-gateway-handler"
-  retention_in_days = 365  # was 14 — CKV_AWS_338 wants >= 1 yr for forensic/audit history
+  retention_in_days = 365 # was 14 — CKV_AWS_338 wants >= 1 yr for forensic/audit history
 
   #checkov:skip=CKV_AWS_158:Logs are encrypted at rest with the AWS-managed key and are metadata-only (no prompt text); a customer-managed KMS key isn't worth the cost here
 }
@@ -65,7 +65,7 @@ resource "aws_lambda_function" "gateway" {
 
   environment {
     variables = {
-      MODEL_ID          = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      MODEL_ID          = var.model_id
       GUARDRAIL_ID      = aws_bedrock_guardrail.gateway.guardrail_id
       GUARDRAIL_VERSION = aws_bedrock_guardrail_version.gateway.version
     }

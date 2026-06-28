@@ -207,4 +207,24 @@ KMS-encrypted** (alerts are metadata-only, and the free AWS-managed key breaks a
 delivery — needs a customer-managed key); the alarm logs *that* a block happened, not yet
 *which category* (guardrail `trace` is a deferred Phase 6.5 polish).
 
+### Phase 8 (Usage alerting + model-as-config — professor feedback) — COMPLETE ✅
+Two review items shipped. **(1) Model-as-config:** the model ID was hardcoded in five
+places (Lambda env var + four Bedrock IAM ARNs); it is now a single Terraform variable
+(`var.model_id` in `variables.tf`), with the cross-region foundation-model ARNs derived
+via `trimprefix(var.model_id, "us.")`. Switching models is now one edit + `terraform apply`
+(or a `-var` flag) — never a console click, eliminating configuration **drift**.
+**(2) Usage/cost alerting:** the handler now logs `total_tokens` per request (metadata
+only), a CloudWatch metric filter reads that number into a `ModelTokenUsage` metric, and an
+alarm emails (via the existing SNS topic) when hourly token usage crosses a threshold —
+catching abuse, leaked credentials, runaway loops, and surprise cost early. An **AWS
+Budgets** dollar-cost alert (`budgets.tf`) adds a second, account-wide layer. Verified
+end-to-end: a normal request produced a token alert at a low test threshold, after which the
+threshold was raised to its real value.
+
+_Distinction worth noting:_ the token alarm, budget, and Phase 6 attack alarm are all
+**detective** controls (they alert *after* an event); the **preventive** complements
+already in place are the Lambda `reserved_concurrent_executions` cap, with API Gateway
+**throttling** flagged as an easy future add. Optional next: per-user token attribution via
+the Cognito `sub`, a `FORECASTED` budget notification, and the still-deferred SNS CMK.
+
 See `plan.md` for the full phase checklist and `learnings.md` for detailed notes.

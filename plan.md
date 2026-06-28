@@ -205,6 +205,48 @@ gate, and a **GitHub Actions** pipeline that runs `terraform plan` on every push
 
 ---
 
+### Phase 8 — Cost/usage alerting & model-as-config (professor feedback)
+
+**Context:** two pieces of feedback from the professor, both standard AWS-security
+discipline: (1) **alert on model usage**, not just on blocked attacks — usage spikes
+are an early-warning signal for a leaked login, a runaway loop, or endpoint abuse, and
+a cost circuit-breaker; (2) **change the model through Terraform, not by hand** — the
+model ID is currently hardcoded in 5 places, which invites a console edit and causes
+**drift** (code stops matching reality). Doing 8a first (quick, low-risk), then 8b.
+
+**8a — Model as a single Terraform variable (no drift, one dial) ✅**
+- [x] Create `terraform/variables.tf` with `variable "model_id"`
+      (default `us.anthropic.claude-haiku-4-5-20251001-v1:0`)
+- [x] `lambda.tf` — replace hardcoded `MODEL_ID` string with `var.model_id`
+- [x] `bedrock.tf` — derive all 4 ARNs from the variable
+      (`var.model_id` for the inference-profile; `trimprefix(var.model_id, "us.")`
+      for the 3 cross-region foundation-model ARNs)
+- [x] `terraform fmt` + `validate` + `plan` (clean rebuild after destroy: 33 to add,
+      0 to change, 0 to destroy) → `apply` (33 added); `terraform output` for fresh values
+- [x] (verify) dial works without code edits via `terraform apply -var="model_id=..."`
+
+**8b — Alert on model token usage (reuse Phase 6 plumbing) ✅**
+- [x] `src/handler.py` — capture `result.get("usage", {})` and add `total_tokens`
+      to the `ANSWER` log line (metadata only — no prompt/answer text)
+- [x] `alerting.tf` — `aws_cloudwatch_log_metric_filter "token_usage"`:
+      pattern `{ $.event = "ANSWER" }`, `value = "$.total_tokens"`, `default_value = "0"`
+- [x] `alerting.tf` — `aws_cloudwatch_metric_alarm "high_token_usage"`:
+      `Sum` over `period = 3600`, threshold above normal, → reuse `alerts` SNS topic
+- [x] `apply` (2 added, 1 changed); tested with a low threshold → alert email received,
+      then raised threshold to its real value
+- [x] (suggestion, done) **AWS Budgets** `budgets.tf` — $-based monthly cost alert
+      (ACTUAL > 80% → email), the second/wider cost layer
+- [x] **API Gateway throttling** (`apigateway.tf` stage `default_route_settings`:
+      rate 5/sec, burst 10) — the *preventive* control vs. the *detective* alarms;
+      excess requests get a 429 before reaching Lambda/Bedrock (applied: 1 changed)
+
+**8d — Wrap-up ✅**
+- [x] Updated `plan.md` checklist, `learnings.md` (Phase 8: what/why, alternatives,
+      memory tricks, Q&A), and README status
+- [ ] End-of-phase MCQ quiz (in chat)
+
+---
+
 ## Important notes & principles
 
 - **Security first, by default.** Every resource is built private/locked-down;

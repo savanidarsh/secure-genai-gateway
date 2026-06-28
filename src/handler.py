@@ -66,5 +66,10 @@ def lambda_handler(event, context):
         _log("GUARDRAIL_BLOCK", request_id, prompt_length=len(prompt))
         return _response(200, {"status": "blocked", "message": answer})
 
-    _log("ANSWER", request_id, answer_length=len(answer))
+    usage = result.get("usage", {})
+    _log("ANSWER", request_id,
+         answer_length=len(answer),
+         input_tokens=usage.get("inputTokens"),
+         output_tokens=usage.get("outputTokens"),
+         total_tokens=usage.get("totalTokens"))
     return _response(200, {"status": "ok", "answer": answer})

@@ -91,11 +91,11 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
         ]
         Resource = [
           # 1) The inference profile itself (in OUR account, us-east-1).
-          "arn:aws:bedrock:us-east-1:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "arn:aws:bedrock:us-east-1:${data.aws_caller_identity.current.account_id}:inference-profile/${var.model_id}",
           # 2) The real model, in EACH region the profile may route to.
-          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+          "arn:aws:bedrock:us-east-1::foundation-model/${trimprefix(var.model_id, "us.")}",
+          "arn:aws:bedrock:us-east-2::foundation-model/${trimprefix(var.model_id, "us.")}",
+          "arn:aws:bedrock:us-west-2::foundation-model/${trimprefix(var.model_id, "us.")}"
         ]
       },
       {
