@@ -176,7 +176,7 @@ secure least-privilege story; revisit a gated apply job later if wanted.
         (CKV_AWS_18), SNS encryption (CKV_AWS_26 — AWS-managed key breaks alarm
         delivery; needs CMK)
 - [x] Re-scan clean: **78 passed / 0 failed / 17 skipped**
-- [ ] (7c) Wire Checkov into the GitHub Actions pipeline (fail the build on a new
+- [x] (7c) Wire Checkov into the GitHub Actions pipeline (fail the build on a new
       insecure config / unjustified finding)
 
 **7c — GitHub Actions pipeline ✅**
