@@ -1,0 +1,33 @@
+# === Secrets & credentials — NEVER commit ===
+.env
+.env.*
+*.pem
+*.key
+credentials
+secrets.*
+
+# === Terraform ===
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# === Python (Lambda) ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# === Build artifacts ===
+*.zip
+dist/
+build/
+
+# === OS / editor noise ===
+.DS_Store
+Thumbs.db
+.vscode/
