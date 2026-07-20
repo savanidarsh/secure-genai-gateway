@@ -136,6 +136,26 @@ This keeps state safe, durable, and usable by the CI/CD pipeline, which runs Ter
 
 ---
 
+## Design decisions
+
+A few choices worth calling out, and the reasoning behind them:
+
+**OIDC federation instead of stored AWS keys.** GitHub Actions authenticates to AWS by exchanging a short-lived OpenID Connect token for temporary credentials, so there are no long-lived access keys sitting in GitHub secrets to leak or rotate. The trust policy is pinned to this repository on the `main` branch, so no other repo or branch can assume the role.
+
+**A read-only CI role; `apply` stays human.** The pipeline can run `terraform plan` but nothing more — its role is `ReadOnlyAccess` plus a couple of narrowly-scoped state-bucket permissions. Applying changes is always a deliberate human action, so a compromised or misconfigured pipeline can't mutate live infrastructure.
+
+**Remote, encrypted, locked Terraform state.** State lives in a dedicated S3 bucket with encryption at rest, versioning, and native S3 locking, rather than on a developer's laptop. That makes it durable, recoverable, safe for CI to use, and immune to corruption from two runs colliding.
+
+**Content safety as its own layer.** Prompt and response inspection (PII, prompt injection, toxicity) is enforced by Bedrock Guardrails, decoupled from the model itself — so safety policy is versioned and can change without touching application code.
+
+**Metadata-only logging.** Logs capture request structure, outcomes, and token counts — never the prompt text — so the audit trail can't itself become a source of data leakage. Log groups are retained for a year for forensic history.
+
+**Least privilege everywhere.** Every IAM role (Lambda execution, CI) is granted only the specific actions and resources it needs, scoped by ARN, rather than broad managed policies.
+
+**Defense in depth on cost.** API Gateway throttling, reserved Lambda concurrency, a token-usage alarm, and an account-level AWS Budget together cap both abuse and runaway spend — a security concern as much as a financial one.
+
+---
+
 ## Security notes
 
 - **Never committed:** `terraform.tfstate`, `*.tfvars`, `.terraform/` — state can contain sensitive values in plaintext. These are enforced by `.gitignore`.
