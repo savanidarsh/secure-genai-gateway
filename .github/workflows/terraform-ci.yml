@@ -6,6 +6,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:          # manual "Run workflow" button (kept for on-demand runs)
 
 # Least privilege by default for the whole workflow.
 permissions:
@@ -31,18 +32,33 @@ jobs:
       - name: Run Checkov on terraform/
         run: checkov -d terraform/ --compact
 
-  # JOB 2 — terraform plan. Needs AWS (via OIDC). Runs only after Checkov passes.
+  # JOB 2 — terraform plan. Needs AWS (via OIDC). Runs after Checkov passes,
+  # on a push to main OR a manual run.
   terraform-plan:
     name: Terraform plan
     runs-on: ubuntu-latest
     needs: checkov
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       id-token: write   # REQUIRED for OIDC — lets this job request the token
       contents: read
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
+
+      # ----- TEMPORARY DEBUG: remove this step once OIDC is confirmed working -----
+      - name: DEBUG - secret length + OIDC token claims
+        run: |
+          echo "AWS_ROLE_ARN length (should be 66): ${#ROLE_ARN}"
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
+          while [ $(( ${#PAYLOAD} % 4 )) -ne 0 ]; do PAYLOAD="${PAYLOAD}="; done
+          echo "----- token claims AWS will check -----"
+          echo "$PAYLOAD" | base64 -d | jq '{iss, aud, sub}'
+        env:
+          ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      # ---------------------------------------------------------------------------
 
       - name: Get short-lived AWS creds via OIDC
         uses: aws-actions/configure-aws-credentials@v4
