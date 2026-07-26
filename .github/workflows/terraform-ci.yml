@@ -46,20 +46,6 @@ jobs:
       - name: Check out the code
         uses: actions/checkout@v4
 
-      # ----- TEMPORARY DEBUG: remove this step once OIDC is confirmed working -----
-      - name: DEBUG - secret length + OIDC token claims
-        run: |
-          echo "AWS_ROLE_ARN length (should be 66): ${#ROLE_ARN}"
-          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
-          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
-          while [ $(( ${#PAYLOAD} % 4 )) -ne 0 ]; do PAYLOAD="${PAYLOAD}="; done
-          echo "----- token claims AWS will check -----"
-          echo "$PAYLOAD" | base64 -d | jq '{iss, aud, sub}'
-        env:
-          ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-      # ---------------------------------------------------------------------------
-
       - name: Get short-lived AWS creds via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
