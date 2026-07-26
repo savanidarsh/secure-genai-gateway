@@ -40,7 +40,7 @@ resource "aws_iam_role" "github_actions" {
             # Token must be addressed to AWS STS...
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
             # ...AND come from THIS repo, on the main branch only.
-            "token.actions.githubusercontent.com:sub" = "repo:savanidarsh/secure-genai-gateway:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" =  "repo:savanidarsh@89135895/secure-genai-gateway@1306334841:ref:refs/heads/main"
           }
         }
       }
